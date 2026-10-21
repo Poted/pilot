@@ -41,6 +41,10 @@ class Prefs(context: Context) {
         get() = sp.getString("last_name", null)
         set(v) = sp.edit().putString("last_name", v).apply()
 
+    var gpsEnabled: Boolean
+        get() = sp.getBoolean("gps_enabled", false)
+        set(v) = sp.edit().putBoolean("gps_enabled", v).apply()
+
     fun isPaired(address: String): Boolean = sp.getStringSet("paired", emptySet())!!.contains(address)
 
     fun setPaired(address: String, paired: Boolean) {

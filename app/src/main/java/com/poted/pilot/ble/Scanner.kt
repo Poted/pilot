@@ -137,7 +137,7 @@ class Scanner(private val context: Context) {
 class Waker(private val context: Context) {
     companion object {
         private const val TAG = "Wake"
-        private const val VARIANT_MS = 2000L
+        private const val VARIANT_MS = 3000L
     }
 
     private val main = Handler(Looper.getMainLooper())

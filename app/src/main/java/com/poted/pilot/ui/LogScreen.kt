@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.poted.pilot.ble.CameraController
 import com.poted.pilot.log.AppLog
 
 @Composable
@@ -73,6 +74,11 @@ fun LogScreen(onBack: () -> Unit) {
             Spacer(Modifier.width(16.dp))
             Text("Przewijaj", style = MaterialTheme.typography.bodySmall)
             Checkbox(checked = follow, onCheckedChange = { follow = it })
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Wybudzanie:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+            TextButton(onClick = { CameraController.get(ctx).wake() }) { Text("Test") }
+            TextButton(onClick = { CameraController.get(ctx).bondExperiment() }) { Text("Sparuj systemowo (eksperyment)") }
         }
         HorizontalDivider()
         SelectionContainer {

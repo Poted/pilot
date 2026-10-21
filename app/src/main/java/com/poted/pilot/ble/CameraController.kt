@@ -1,8 +1,14 @@
 package com.poted.pilot.ble
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import com.poted.pilot.gps.GpsFeeder
 import com.poted.pilot.log.AppLog
 import com.poted.pilot.protocol.CameraStatus
 import com.poted.pilot.protocol.CmdType
@@ -63,6 +69,7 @@ private class RejectedException(msg: String) : Exception(msg)
 class CameraController private constructor(private val context: Context) {
     companion object {
         private const val TAG = "Cam"
+        private const val WAKE_WINDOW_MS = 45_000L
         @Volatile private var instance: CameraController? = null
 
         fun get(context: Context): CameraController =
@@ -109,6 +116,22 @@ class CameraController private constructor(private val context: Context) {
     /** Start recording as soon as the camera is awake again (set by START while asleep). */
     @Volatile private var startAfterWakeUntil = 0L
     private val haptics = Haptics(context)
+    val gps = GpsFeeder(context)
+    @Volatile private var wakeGeneration = 0
+
+    init {
+        startGpsPump()
+        ContextCompat.registerReceiver(context, object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                @Suppress("DEPRECATION")
+                val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                if (d.address != _connection.value.address) return
+                val st = i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+                val prev = i.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
+                AppLog.i(TAG, "bond state ${bondName(prev)} -> ${bondName(st)}")
+            }
+        }, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
 
     private val reassembler = FrameReassembler(
         onFrame = { f, raw -> onFrame(f, raw) },
@@ -206,12 +229,12 @@ class CameraController private constructor(private val context: Context) {
      * camera reconnects and reports power_mode=0. Nothing is sent to the sleeping camera.
      */
     private fun wakeThenRecord() {
-        startAfterWakeUntil = System.currentTimeMillis() + 25_000
+        startAfterWakeUntil = System.currentTimeMillis() + WAKE_WINDOW_MS
         _busy.value = true
         notice("Kamera uśpiona — wybudzam, nagrywanie ruszy po wybudzeniu")
         wake()
         scope.launch {
-            delay(25_000)
+            delay(WAKE_WINDOW_MS)
             if (startAfterWakeUntil != 0L && System.currentTimeMillis() >= startAfterWakeUntil) {
                 startAfterWakeUntil = 0
                 _busy.value = false
@@ -245,17 +268,86 @@ class CameraController private constructor(private val context: Context) {
         }
     }
 
-    /** Advertises the wake-up packet, then (re)connects if needed. */
+    /**
+     * Wake-up sequence. Stage 1: advertise while the BLE link stays up (what the ESP32 demo does).
+     * Stage 2, if the camera still reports sleep: drop the link and advertise again, in case the
+     * camera only listens for the wake packet when nobody is connected; the session loop then
+     * reconnects with autoConnect once the camera is up.
+     */
     fun wake() {
         val addr = _connection.value.address ?: prefs.lastAddress
         if (addr == null) {
             AppLog.w(TAG, "wake: no known camera")
             return
         }
+        val gen = ++wakeGeneration
+        val device = bluetoothAdapter()?.getRemoteDevice(addr)
+        AppLog.i(TAG, "wake stage 1 (link up), phase=${_connection.value.phase}, bond=${bondName(device?.bondState ?: -1)}")
         waker.wake(addr) {
-            AppLog.i(TAG, "wake advertising done; phase=${_connection.value.phase} asleep=${_asleep.value}")
-            if (_connection.value.phase == Phase.IDLE || _connection.value.phase == Phase.FAILED) {
-                connect(addr, _connection.value.name)
+            scope.launch {
+                delay(3000)
+                if (gen != wakeGeneration) return@launch
+                val phase = _connection.value.phase
+                when {
+                    phase == Phase.IDLE || phase == Phase.FAILED -> connect(addr, _connection.value.name)
+                    phase == Phase.CONNECTED && _asleep.value -> {
+                        AppLog.i(TAG, "wake stage 2: still asleep, dropping the link and advertising again")
+                        closeClient()
+                        waker.wake(addr) { AppLog.i(TAG, "wake stage 2 done; phase=${_connection.value.phase}") }
+                    }
+                    else -> AppLog.i(TAG, "wake: camera responded (phase=$phase, asleep=${_asleep.value})")
+                }
+            }
+        }
+    }
+
+    /**
+     * Experiment for the wake-up packet: Android advertises from a random address that differs
+     * from the one used for the GATT link. If the camera only accepts the wake packet from the
+     * remote it knows, bonding (which hands it this phone's IRK) may let it resolve the address.
+     */
+    fun bondExperiment() {
+        val addr = _connection.value.address ?: prefs.lastAddress ?: return
+        val d = bluetoothAdapter()?.getRemoteDevice(addr) ?: return
+        AppLog.i(TAG, "bond experiment: current bond=${bondName(d.bondState)}")
+        if (d.bondState == BluetoothDevice.BOND_NONE) {
+            val ok = d.createBond()
+            AppLog.i(TAG, "createBond() -> $ok")
+        }
+    }
+
+    private fun bluetoothAdapter() =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+
+    private fun bondName(s: Int) = when (s) {
+        BluetoothDevice.BOND_NONE -> "NONE"
+        BluetoothDevice.BOND_BONDING -> "BONDING"
+        BluetoothDevice.BOND_BONDED -> "BONDED"
+        else -> s.toString()
+    }
+
+    /** Sends the latest phone fix to the camera once per second (0017, no reply). */
+    private fun startGpsPump() {
+        scope.launch {
+            var lastLogged = 0L
+            while (true) {
+                delay(1000)
+                if (!gps.state.value.running || !isConnected || _asleep.value) continue
+                val payload = gps.payload() ?: continue
+                try {
+                    val (set, id) = Commands.GPS_PUSH
+                    val n = gps.state.value.sentCount
+                    if (n == 0L || System.currentTimeMillis() - lastLogged > 60_000) {
+                        lastLogged = System.currentTimeMillis()
+                        val loc = gps.state.value.location
+                        AppLog.i(TAG, "GPS push #${n + 1}: %.6f, %.6f ±%.0f m, sats=%d".format(
+                            loc?.latitude, loc?.longitude, loc?.accuracy, gps.state.value.satellitesUsed))
+                    }
+                    sendCommand(set, id, CmdType.CMD_NO_RESPONSE, payload, quiet = true)
+                    gps.markSent()
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "GPS push failed: ${e.message}")
+                }
             }
         }
     }
@@ -469,13 +561,14 @@ class CameraController private constructor(private val context: Context) {
         payload: ByteArray,
         timeoutMs: Long = 5000,
         awaitReply: Boolean = cmdType and 0x1F != 0,
+        quiet: Boolean = false,
     ): Frame? {
         var s = seq.incrementAndGet() and 0xFFFF
         if (s == 0) s = seq.incrementAndGet() and 0xFFFF
         val f = Frame(cmdType, s, cmdSet, cmdId, payload)
         val d = if (awaitReply) CompletableDeferred<Frame>().also { pending[s] = it } else null
         try {
-            writeFrame(f, noResponse = cmdType and 0x1F == 0)
+            writeFrame(f, noResponse = cmdType and 0x1F == 0, quiet = quiet)
         } catch (e: Exception) {
             pending.remove(s)
             throw e
@@ -489,10 +582,10 @@ class CameraController private constructor(private val context: Context) {
         return r
     }
 
-    private suspend fun writeFrame(f: Frame, noResponse: Boolean) {
+    private suspend fun writeFrame(f: Frame, noResponse: Boolean, quiet: Boolean = false) {
         val c = client ?: throw IOException("not connected")
         val bytes = f.encode()
-        AppLog.i("TX", "$f [${bytes.toHex()}]")
+        if (quiet) AppLog.v("TX", "$f [${bytes.toHex()}]") else AppLog.i("TX", "$f [${bytes.toHex()}]")
         c.write(bytes, noResponse)
     }
 

@@ -43,6 +43,8 @@ class CameraService : Service() {
         const val ACTION_CONNECT = "com.poted.pilot.CONNECT"
         const val ACTION_TOGGLE_RECORD = "com.poted.pilot.TOGGLE_RECORD"
         const val ACTION_DISCONNECT = "com.poted.pilot.DISCONNECT"
+        const val ACTION_SET_GPS = "com.poted.pilot.SET_GPS"
+        const val EXTRA_ENABLED = "enabled"
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_NAME = "name"
 
@@ -53,6 +55,22 @@ class CameraService : Service() {
                 .putExtra(EXTRA_NAME, name)
             ContextCompat.startForegroundService(context, i)
         }
+
+        /** Called from the UI (foreground), which Android requires for starting location use. */
+        fun setGps(context: Context, enabled: Boolean) {
+            val c = CameraController.get(context)
+            c.prefs.gpsEnabled = enabled
+            val phase = c.connection.value.phase
+            if (phase != Phase.IDLE && phase != Phase.FAILED) {
+                context.startService(
+                    Intent(context, CameraService::class.java).setAction(ACTION_SET_GPS).putExtra(EXTRA_ENABLED, enabled)
+                )
+            }
+        }
+
+        fun hasLocationPermission(context: Context) =
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
 
         fun disconnect(context: Context) {
             // If the service isn't running there is nothing to keep alive; just reset state.
@@ -88,6 +106,7 @@ class CameraService : Service() {
                 AppLog.i(TAG, "record toggled from notification")
                 controller.toggleRecord()
             }
+            ACTION_SET_GPS -> applyGps()
             ACTION_DISCONNECT -> {
                 AppLog.i(TAG, "disconnect from notification")
                 controller.disconnect()
@@ -110,10 +129,7 @@ class CameraService : Service() {
     private fun goForeground() {
         if (isForeground) return
         isForeground = true
-        val n = buildNotification()
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, n, type)
+        if (startForegroundWithTypes(withLocation = wantsGps()) && wantsGps()) controller.gps.start()
         if (wakeLock == null) {
             // Keeps reconnect timers and the coroutine dispatcher running in Doze.
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -122,6 +138,40 @@ class CameraService : Service() {
                 acquire()
             }
             AppLog.i(TAG, "foreground service started, wake lock held")
+        }
+    }
+
+    private fun wantsGps() = controller.prefs.gpsEnabled && hasLocationPermission(this)
+
+    /**
+     * Location use needs the `location` FGS type, which Android only grants while the app is in
+     * the foreground. Falls back to connectedDevice only (GPS off) when that is refused.
+     */
+    private fun startForegroundWithTypes(withLocation: Boolean): Boolean {
+        val n = buildNotification()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, n, 0)
+            return withLocation
+        }
+        val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (withLocation) {
+            try {
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, n, base or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+                return true
+            } catch (e: Exception) {
+                AppLog.w(TAG, "location FGS type refused (${e.javaClass.simpleName}); GPS off for this session")
+            }
+        }
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, n, base)
+        return false
+    }
+
+    private fun applyGps() {
+        if (wantsGps()) {
+            if (startForegroundWithTypes(withLocation = true)) controller.gps.start()
+        } else {
+            controller.gps.stop()
+            startForegroundWithTypes(withLocation = false)
         }
     }
 
@@ -135,6 +185,7 @@ class CameraService : Service() {
                 controller.busy, controller.asleep, controller.notice,
             )
         ) { it.toList() }.distinctUntilChanged().onEach {
+            RecordTileService.refresh(this)
             val phase = controller.connection.value.phase
             if (phase == Phase.IDLE || phase == Phase.FAILED) {
                 stopSelfCleanly()
@@ -241,6 +292,7 @@ class CameraService : Service() {
 
     override fun onDestroy() {
         AppLog.i(TAG, "service destroyed")
+        controller.gps.stop()
         scope?.cancel()
         scope = null
         wakeLock?.let { if (it.isHeld) it.release() }

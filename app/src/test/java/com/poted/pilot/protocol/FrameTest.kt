@@ -144,4 +144,30 @@ class FrameTest {
         assertEquals(1968L, s.remainTimeSec)
         assertEquals(86, s.batteryPercent)
     }
+
+    // test/test_gps.c, first frame (seq 3, CMD_NO_RESPONSE).
+    private val gpsFrame =
+        "AA 42 00 00 00 00 00 00 03 00 D2 DD 00 17 4F 00 35 01 8A A5 02 00 BC B2 E9 43 A3 4F 75 0D B9 6D " +
+            "00 00 DE 58 24 41 8D 9A C5 41 00 00 00 00 E8 03 00 00 E8 03 00 00 0A 00 00 00 0E 00 00 00 63 B5 D1 31"
+
+    @Test
+    fun encodesGpsPushExample() {
+        val payload = Commands.gpsPush(
+            yearMonthDay = 20250703,
+            hourMinuteSecond = 173450,
+            longitudeE7 = 0x43E9B2BC,
+            latitudeE7 = 0x0D754FA3,
+            heightMm = 0x6DB9,
+            speedNorthCms = java.lang.Float.intBitsToFloat(0x412458DE),
+            speedEastCms = java.lang.Float.intBitsToFloat(0x41C59A8D),
+            speedDownCms = 0f,
+            verticalAccuracyMm = 1000,
+            horizontalAccuracyMm = 1000,
+            speedAccuracyCms = 10,
+            satellites = 14,
+        )
+        assertEquals(48, payload.size)
+        val f = Frame(CmdType.CMD_NO_RESPONSE, 3, 0x00, 0x17, payload)
+        assertEquals(gpsFrame.replace(" ", ""), f.encode().toHex(""))
+    }
 }

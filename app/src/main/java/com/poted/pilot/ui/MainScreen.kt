@@ -34,6 +34,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -108,6 +109,8 @@ fun MainScreen(onShowLog: () -> Unit) {
                 ConnectPanel(conn, controller)
             }
             Spacer(Modifier.height(16.dp))
+            GpsPanel(controller)
+            Spacer(Modifier.height(8.dp))
             Footer(conn, controller)
         }
         RecordBar(connected, status, asleep, busy) { controller.toggleRecord() }
@@ -317,6 +320,51 @@ private fun SecondaryButton(text: String, modifier: Modifier = Modifier, enabled
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, Palette.Outline),
     ) { Text(text, color = if (enabled) Palette.Text else Palette.Label) }
+}
+
+// ------------------------------------------------------------------ GPS
+
+@Composable
+private fun GpsPanel(controller: CameraController) {
+    val ctx = LocalContext.current
+    val activity = ctx as MainActivity
+    val gps by controller.gps.state.collectAsState()
+    var enabled by remember { mutableStateOf(controller.prefs.gpsEnabled) }
+
+    Column(Modifier.fillMaxWidth().clip(Card).background(Palette.Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("GPS z telefonu", color = Palette.Text, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Lokalizacja i prędkość zapisywane przez kamerę w nagraniu",
+                    fontSize = 12.sp, color = Palette.Label,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = { on ->
+                if (on) {
+                    activity.requestLocation { granted ->
+                        enabled = granted
+                        CameraService.setGps(ctx, granted)
+                    }
+                } else {
+                    enabled = false
+                    CameraService.setGps(ctx, false)
+                }
+            })
+        }
+        if (enabled) {
+            val loc = gps.location
+            val line = when {
+                !gps.running -> "Włączy się po połączeniu z kamerą"
+                loc == null -> "Szukam satelitów… (widoczne: ${gps.satellitesVisible})"
+                else -> "±${loc.accuracy.toInt()} m · satelity ${gps.satellitesUsed}/${gps.satellitesVisible}" +
+                    (if (loc.hasSpeed()) " · ${(loc.speed * 3.6).toInt()} km/h" else "") +
+                    " · wysłano ${gps.sentCount}"
+            }
+            Text(line, fontSize = 12.sp, color = if (loc != null) Palette.Ready else Palette.Warn,
+                modifier = Modifier.padding(top = 4.dp))
+        }
+    }
 }
 
 // ------------------------------------------------------------------ connection

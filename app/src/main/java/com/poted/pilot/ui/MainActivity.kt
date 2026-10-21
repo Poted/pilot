@@ -60,6 +60,29 @@ class MainActivity : ComponentActivity() {
             if (denied.isNotEmpty()) AppLog.w("UI", "permissions denied: $denied")
         }
 
+    private var onLocationResult: ((Boolean) -> Unit)? = null
+    private val locationLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+            val granted = res[Manifest.permission.ACCESS_FINE_LOCATION] == true
+            if (!granted) AppLog.w("UI", "precise location denied: $res")
+            onLocationResult?.invoke(granted)
+            onLocationResult = null
+        }
+
+    /** Precise location is needed for GPS forwarding; asked only when the user enables it. */
+    fun requestLocation(onResult: (Boolean) -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            onResult(true)
+            return
+        }
+        onLocationResult = onResult
+        locationLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(this)

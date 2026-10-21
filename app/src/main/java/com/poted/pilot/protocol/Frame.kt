@@ -186,6 +186,7 @@ class Bytes {
     fun u8(v: Int) = apply { out.write(v and 0xFF) }
     fun u16(v: Int) = apply { u8(v); u8(v ushr 8) }
     fun u32(v: Long) = apply { for (i in 0 until 4) u8((v ushr (8 * i)).toInt()) }
+    fun f32(v: Float) = apply { u32(java.lang.Float.floatToRawIntBits(v).toLong() and 0xFFFFFFFFL) }
     fun bytes(b: ByteArray) = apply { out.write(b) }
     fun zeros(n: Int) = apply { repeat(n) { u8(0) } }
     fun build(): ByteArray = out.toByteArray()
