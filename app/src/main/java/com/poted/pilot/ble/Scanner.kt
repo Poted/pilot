@@ -2,9 +2,6 @@ package com.poted.pilot.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.AdvertiseCallback
-import android.bluetooth.le.AdvertiseData
-import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -118,68 +115,5 @@ class Scanner(private val context: Context) {
         }
         _scanning.value = false
         AppLog.i(TAG, "scan stop, found ${_devices.value.count { it.isDjiCamera }} DJI camera(s)")
-    }
-}
-
-/**
- * Wakes a sleeping camera by advertising "WKP" + its MAC in reverse byte order for 2 s
- * (ble_start_advertising() in the demo). Raw AD: 0A FF 'W' 'K' 'P' m5 m4 m3 m2 m1 m0.
- * On Android the first two bytes of the manufacturer data are the company id (LE), so
- * company id = 0x4B57 ("WK") and data = 'P' + reversed MAC.
- */
-@SuppressLint("MissingPermission")
-class Waker(private val context: Context) {
-    private val main = Handler(Looper.getMainLooper())
-    private var active: AdvertiseCallback? = null
-
-    fun wake(cameraAddress: String, onDone: () -> Unit = {}) {
-        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        val adv = adapter?.bluetoothLeAdvertiser
-        if (adv == null) {
-            AppLog.e("Wake", "BLE advertising not supported")
-            onDone()
-            return
-        }
-        stop()
-        val mac = cameraAddress.split(":").map { it.toInt(16).toByte() }
-        val payload = byteArrayOf('P'.code.toByte()) + mac.reversed().toByteArray()
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .addManufacturerData(0x4B57, payload)
-            .build()
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .setConnectable(true)
-            .setTimeout(0)
-            .build()
-        val cb = object : AdvertiseCallback() {
-            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-                AppLog.i("Wake", "advertising WKP for $cameraAddress: 57 4B ${payload.toHex()}")
-            }
-
-            override fun onStartFailure(errorCode: Int) {
-                AppLog.e("Wake", "advertising failed, errorCode=$errorCode")
-            }
-        }
-        active = cb
-        adv.startAdvertising(settings, data, cb)
-        main.postDelayed({
-            stop()
-            onDone()
-        }, 2000)
-    }
-
-    fun stop() {
-        val cb = active ?: return
-        active = null
-        try {
-            (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-                ?.bluetoothLeAdvertiser?.stopAdvertising(cb)
-            AppLog.i("Wake", "advertising stopped")
-        } catch (e: Exception) {
-            AppLog.w("Wake", "stopAdvertising: ${e.message}")
-        }
     }
 }

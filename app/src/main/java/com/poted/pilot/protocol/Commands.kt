@@ -15,6 +15,7 @@ object Commands {
     val KEY_REPORT = 0x00 to 0x11
     val CONNECTION = 0x00 to 0x19
     val POWER_MODE = 0x00 to 0x1A
+    val GPS_PUSH = 0x00 to 0x17
     val STATUS_PUSH = 0x1D to 0x02
     val RECORD = 0x1D to 0x03
     val MODE_SWITCH = 0x1D to 0x04
@@ -58,6 +59,38 @@ object Commands {
     /** key_code 1 = record, 2 = QS, 3 = snapshot; mode 1 = key event; value 0 = short press. */
     fun keyReport(keyCode: Int, mode: Int = 1, value: Int = 0): ByteArray =
         Bytes().u8(keyCode).u8(mode).u16(value).build()
+
+    /**
+     * GPS data push (0017), 48 bytes. Time follows gps_push_data() in the demo: UTC date and
+     * (UTC hour + 8) without wrapping, i.e. the camera expects UTC+8 and converts back.
+     */
+    fun gpsPush(
+        yearMonthDay: Int,
+        hourMinuteSecond: Int,
+        longitudeE7: Int,
+        latitudeE7: Int,
+        heightMm: Int,
+        speedNorthCms: Float,
+        speedEastCms: Float,
+        speedDownCms: Float,
+        verticalAccuracyMm: Long,
+        horizontalAccuracyMm: Long,
+        speedAccuracyCms: Long,
+        satellites: Long,
+    ): ByteArray = Bytes()
+        .u32(yearMonthDay.toLong())
+        .u32(hourMinuteSecond.toLong())
+        .u32(longitudeE7.toLong())
+        .u32(latitudeE7.toLong())
+        .u32(heightMm.toLong())
+        .f32(speedNorthCms)
+        .f32(speedEastCms)
+        .f32(speedDownCms)
+        .u32(verticalAccuracyMm)
+        .u32(horizontalAccuracyMm)
+        .u32(speedAccuracyCms)
+        .u32(satellites)
+        .build()
 
     /** 0 = normal, 3 = sleep. */
     fun powerMode(mode: Int): ByteArray = Bytes().u8(mode).build()
@@ -148,6 +181,10 @@ data class CameraStatus(
     val fpsIdx: Int?,
     val eisMode: Int?,
     val recordTimeSec: Int?,
+    val photoRatio: Int?,
+    val countdownSec: Int?,
+    val timelapseInterval: Int?,
+    val timelapseDurationSec: Int?,
     val remainCapacityMb: Long?,
     val remainPhotoNum: Long?,
     val remainTimeSec: Long?,
@@ -155,6 +192,7 @@ data class CameraStatus(
     val powerMode: Int?,
     val modeNextFlag: Int?,
     val tempOver: Int?,
+    val photoCountdownMs: Long?,
     val loopRecordSec: Int?,
     val batteryPercent: Int?,
 ) {
@@ -184,6 +222,10 @@ data class CameraStatus(
                 fpsIdx = u8(3),
                 eisMode = u8(4),
                 recordTimeSec = u16(5),
+                photoRatio = u8(8),
+                countdownSec = u16(9),
+                timelapseInterval = u16(11),
+                timelapseDurationSec = u16(13),
                 remainCapacityMb = u32(15),
                 remainPhotoNum = u32(19),
                 remainTimeSec = u32(23),
@@ -191,6 +233,7 @@ data class CameraStatus(
                 powerMode = u8(28),
                 modeNextFlag = u8(29),
                 tempOver = u8(30),
+                photoCountdownMs = u32(31),
                 loopRecordSec = u16(35),
                 batteryPercent = u8(37),
             )
@@ -206,7 +249,24 @@ data class CameraStatus(
             95 -> "2.7K 4:3"
             103 -> "4K 4:3"
             109 -> "4K 9:16"
-            else -> "res#$v"
+            else -> "#$v"
+        }
+
+        fun eisName(v: Int?): String? = when (v) {
+            null -> null
+            0 -> "Wył."
+            1 -> "RockSteady"
+            2 -> "HorizonSteady"
+            3 -> "RockSteady+"
+            4 -> "HorizonBalancing"
+            else -> "eis#$v"
+        }
+
+        fun ratioName(v: Int?): String? = when (v) {
+            null -> null
+            0 -> "4:3"
+            1 -> "16:9"
+            else -> "#$v"
         }
 
         fun fpsName(v: Int?): String? = when (v) {

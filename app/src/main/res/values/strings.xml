@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Osmo Pilot</string>
+    <string name="tile_label">Nagrywanie Osmo</string>
+    <string name="panel_widget_label">Osmo Pilot — panel</string>
+    <string name="panel_widget_description">Nagrywanie, połącz/rozłącz, przekazanie do Mimo, aplikacja</string>
+    <string name="widget_description">Jeden przycisk: start/stop nagrywania</string>
 </resources>
