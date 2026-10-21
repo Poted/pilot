@@ -129,7 +129,8 @@ class GpsFeeder(private val context: Context) {
             verticalAccuracyMm = vAcc,
             horizontalAccuracyMm = hAcc,
             speedAccuracyCms = sAcc,
-            satellites = st.satellitesUsed.toLong(),
+            // GnssStatus may lag behind the first fix; the provider also reports it in extras.
+            satellites = (st.satellitesUsed.takeIf { it > 0 } ?: loc.extras?.getInt("satellites") ?: 0).toLong(),
         )
     }
 

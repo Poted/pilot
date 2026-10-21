@@ -69,7 +69,7 @@ private class RejectedException(msg: String) : Exception(msg)
 class CameraController private constructor(private val context: Context) {
     companion object {
         private const val TAG = "Cam"
-        private const val WAKE_WINDOW_MS = 45_000L
+        private const val WAKE_WINDOW_MS = 30_000L
         @Volatile private var instance: CameraController? = null
 
         fun get(context: Context): CameraController =
@@ -117,7 +117,6 @@ class CameraController private constructor(private val context: Context) {
     @Volatile private var startAfterWakeUntil = 0L
     private val haptics = Haptics(context)
     val gps = GpsFeeder(context)
-    @Volatile private var wakeGeneration = 0
 
     init {
         startGpsPump()
@@ -231,7 +230,7 @@ class CameraController private constructor(private val context: Context) {
     private fun wakeThenRecord() {
         startAfterWakeUntil = System.currentTimeMillis() + WAKE_WINDOW_MS
         _busy.value = true
-        notice("Kamera uśpiona — wybudzam, nagrywanie ruszy po wybudzeniu")
+        notice("Kamera uśpiona — próbuję wybudzić. Jeśli nie wstanie, naciśnij przycisk na kamerze; nagrywanie ruszy samo.")
         wake()
         scope.launch {
             delay(WAKE_WINDOW_MS)
@@ -269,10 +268,10 @@ class CameraController private constructor(private val context: Context) {
     }
 
     /**
-     * Wake-up sequence. Stage 1: advertise while the BLE link stays up (what the ESP32 demo does).
-     * Stage 2, if the camera still reports sleep: drop the link and advertise again, in case the
-     * camera only listens for the wake packet when nobody is connected; the session loop then
-     * reconnects with autoConnect once the camera is up.
+     * Sends the wake-up advertisement (what the ESP32 demo does) while the BLE link stays up.
+     * Tested on an Osmo Action 6 from Android: the camera does not react, most likely because
+     * Android advertises from a random address the camera doesn't know. Dropping the link does
+     * not help either: the sleeping camera accepts a connection and terminates it right away.
      */
     fun wake() {
         val addr = _connection.value.address ?: prefs.lastAddress
@@ -280,24 +279,12 @@ class CameraController private constructor(private val context: Context) {
             AppLog.w(TAG, "wake: no known camera")
             return
         }
-        val gen = ++wakeGeneration
         val device = bluetoothAdapter()?.getRemoteDevice(addr)
-        AppLog.i(TAG, "wake stage 1 (link up), phase=${_connection.value.phase}, bond=${bondName(device?.bondState ?: -1)}")
+        AppLog.i(TAG, "wake, phase=${_connection.value.phase}, bond=${bondName(device?.bondState ?: -1)}")
         waker.wake(addr) {
-            scope.launch {
-                delay(3000)
-                if (gen != wakeGeneration) return@launch
-                val phase = _connection.value.phase
-                when {
-                    phase == Phase.IDLE || phase == Phase.FAILED -> connect(addr, _connection.value.name)
-                    phase == Phase.CONNECTED && _asleep.value -> {
-                        AppLog.i(TAG, "wake stage 2: still asleep, dropping the link and advertising again")
-                        closeClient()
-                        waker.wake(addr) { AppLog.i(TAG, "wake stage 2 done; phase=${_connection.value.phase}") }
-                    }
-                    else -> AppLog.i(TAG, "wake: camera responded (phase=$phase, asleep=${_asleep.value})")
-                }
-            }
+            val phase = _connection.value.phase
+            AppLog.i(TAG, "wake advertising done; phase=$phase asleep=${_asleep.value}")
+            if (phase == Phase.IDLE || phase == Phase.FAILED) connect(addr, _connection.value.name)
         }
     }
 
