@@ -1,0 +1,480 @@
+package com.poted.pilot.ble
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import com.poted.pilot.log.AppLog
+import com.poted.pilot.protocol.CameraStatus
+import com.poted.pilot.protocol.CmdType
+import com.poted.pilot.protocol.Commands
+import com.poted.pilot.protocol.Frame
+import com.poted.pilot.protocol.FrameReassembler
+import com.poted.pilot.protocol.toHex
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
+
+enum class Phase(val label: String) {
+    IDLE("Rozłączono"),
+    CONNECTING("Łączenie…"),
+    HANDSHAKE("Uzgadnianie protokołu…"),
+    WAITING_APPROVAL("Potwierdź na kamerze"),
+    CONNECTED("Połączono"),
+    RECONNECTING("Ponowne łączenie…"),
+    FAILED("Błąd"),
+}
+
+data class Connection(
+    val phase: Phase = Phase.IDLE,
+    val address: String? = null,
+    val name: String? = null,
+    val message: String? = null,
+    val verifyCode: Int? = null,
+    val cameraDeviceId: Long? = null,
+    val version: String? = null,
+)
+
+private class RejectedException(msg: String) : Exception(msg)
+
+/**
+ * Port of connect_logic.c / command_logic.c / status_logic.c from the DJI demo.
+ *
+ * Session: GATT connect -> MTU -> discover FFF0 -> enable FFF4 notify -> 0019 handshake
+ * -> 0000 version -> 1D05 subscribe. When the link drops unexpectedly, it reconnects with
+ * autoConnect=true (which keeps working with the screen off) and repeats the handshake with
+ * verify_mode=0 so the camera does not ask again.
+ */
+@SuppressLint("MissingPermission")
+class CameraController private constructor(private val context: Context) {
+    companion object {
+        private const val TAG = "Cam"
+        @Volatile private var instance: CameraController? = null
+
+        fun get(context: Context): CameraController =
+            instance ?: synchronized(this) {
+                instance ?: CameraController(context.applicationContext).also { instance = it }
+            }
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val prefs = Prefs(context)
+    val scanner = Scanner(context)
+    private val waker = Waker(context)
+
+    private val _connection = MutableStateFlow(Connection(address = prefs.lastAddress, name = prefs.lastName))
+    val connection: StateFlow<Connection> = _connection
+    private val _status = MutableStateFlow<CameraStatus?>(null)
+    val status: StateFlow<CameraStatus?> = _status
+    private val _modeName = MutableStateFlow<Commands.ModeName?>(null)
+    val modeName: StateFlow<Commands.ModeName?> = _modeName
+    private val _busy = MutableStateFlow(false)
+    /** True while a record start/stop command is in flight. */
+    val busy: StateFlow<Boolean> = _busy
+
+    private var sessionJob: Job? = null
+    @Volatile private var client: GattClient? = null
+    private val pending = ConcurrentHashMap<Int, CompletableDeferred<Frame>>()
+    @Volatile private var handshakeFrames = Channel<Frame>(Channel.UNLIMITED)
+    private val seq = AtomicInteger(Random.nextInt(1, 0x8000))
+    private var lastStatusKey: String? = null
+
+    private val reassembler = FrameReassembler(
+        onFrame = { f, raw -> onFrame(f, raw) },
+        onError = { reason, raw -> AppLog.w("RX", "bad data: $reason [${raw.toHex()}]") },
+    )
+
+    private fun update(block: (Connection) -> Connection) {
+        _connection.value = block(_connection.value)
+    }
+
+    // ---------------------------------------------------------------- public API
+
+    fun connect(address: String, name: String?) {
+        scanner.stop()
+        sessionJob?.cancel()
+        closeClient()
+        prefs.lastAddress = address
+        if (name != null) prefs.lastName = name
+        update { Connection(phase = Phase.CONNECTING, address = address, name = name ?: prefs.lastName) }
+        AppLog.i(TAG, "connect to $address (${name ?: "?"}), paired=${prefs.isPaired(address)}")
+        sessionJob = scope.launch { sessionLoop(address) }
+    }
+
+    fun disconnect() {
+        AppLog.i(TAG, "disconnect requested by user")
+        sessionJob?.cancel()
+        sessionJob = null
+        closeClient()
+        resetSessionState()
+        update { it.copy(phase = Phase.IDLE, message = null, verifyCode = null) }
+    }
+
+    fun forgetPairing() {
+        _connection.value.address?.let { prefs.setPaired(it, false) }
+        AppLog.i(TAG, "pairing flag cleared; next connection will use verify_mode=1")
+    }
+
+    val isConnected: Boolean get() = _connection.value.phase == Phase.CONNECTED
+
+    fun toggleRecord() {
+        if (!isConnected) {
+            AppLog.w(TAG, "record: not connected")
+            return
+        }
+        if (_busy.value) return
+        val start = _status.value?.isRecording != true
+        _busy.value = true
+        scope.launch {
+            try {
+                AppLog.i(TAG, if (start) "START recording" else "STOP recording")
+                val (set, id) = Commands.RECORD
+                val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.recordControl(start))
+                if (r == null) {
+                    AppLog.w(TAG, "record: no response from camera")
+                } else {
+                    val ret = Commands.retCode(r.payload)
+                    AppLog.i(TAG, "record ${if (start) "start" else "stop"} ret_code=$ret")
+                }
+            } catch (e: Exception) {
+                AppLog.e(TAG, "record failed", e)
+            } finally {
+                // Hold the button until the next status push confirms the change (max 3 s).
+                withTimeoutOrNull(3000) {
+                    while (_status.value?.isRecording != start) delay(100)
+                }
+                _busy.value = false
+            }
+        }
+    }
+
+    fun switchMode(mode: Int) = fire("mode switch -> ${Commands.modeName(mode)}") {
+        val (set, id) = Commands.MODE_SWITCH
+        val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.modeSwitch(mode))
+        AppLog.i(TAG, "mode switch ret_code=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+    }
+
+    fun quickSwitch() = fire("QS key") {
+        val (set, id) = Commands.KEY_REPORT
+        val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.keyReport(keyCode = 0x02))
+        AppLog.i(TAG, "QS ret_code=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+    }
+
+    fun sleep() = fire("power mode -> sleep") {
+        val (set, id) = Commands.POWER_MODE
+        val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.powerMode(3))
+        AppLog.i(TAG, "sleep ret_code=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+    }
+
+    /** Advertises the wake-up packet for 2 s, then (re)connects if needed. */
+    fun wake() {
+        val addr = _connection.value.address ?: prefs.lastAddress
+        if (addr == null) {
+            AppLog.w(TAG, "wake: no known camera")
+            return
+        }
+        waker.wake(addr) {
+            if (_connection.value.phase == Phase.IDLE || _connection.value.phase == Phase.FAILED) {
+                connect(addr, _connection.value.name)
+            }
+        }
+    }
+
+    private fun fire(what: String, block: suspend () -> Unit) {
+        if (!isConnected) {
+            AppLog.w(TAG, "$what: not connected")
+            return
+        }
+        AppLog.i(TAG, what)
+        scope.launch {
+            try {
+                block()
+            } catch (e: Exception) {
+                AppLog.e(TAG, "$what failed", e)
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- session
+
+    private suspend fun sessionLoop(address: String) {
+        var attempt = 0
+        var everConnected = false
+        while (true) {
+            // First try a direct connection; afterwards let the stack wait for the camera.
+            val autoConnect = attempt > 0 || everConnected
+            try {
+                runSession(address, autoConnect) { everConnected = true; attempt = 0 }
+            } catch (e: TimeoutCancellationException) {
+                // withTimeout inside the session, not cancellation of the loop itself.
+                AppLog.w(TAG, "session timeout: ${e.message}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RejectedException) {
+                AppLog.e(TAG, "camera rejected the connection: ${e.message}")
+                prefs.setPaired(address, false)
+                closeClient()
+                resetSessionState()
+                update { it.copy(phase = Phase.FAILED, message = "Kamera odrzuciła połączenie", verifyCode = null) }
+                return
+            } catch (e: Exception) {
+                AppLog.w(TAG, "session ended: ${e.javaClass.simpleName}: ${e.message}")
+            }
+            closeClient()
+            resetSessionState()
+            attempt++
+            val backoff = when {
+                attempt <= 1 -> 1_000L
+                attempt <= 3 -> 3_000L
+                attempt <= 6 -> 10_000L
+                else -> 30_000L
+            }
+            update { it.copy(phase = Phase.RECONNECTING, message = "Próba $attempt za ${backoff / 1000}s", verifyCode = null) }
+            delay(backoff)
+        }
+    }
+
+    private suspend fun runSession(address: String, autoConnect: Boolean, onEstablished: () -> Unit) {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        if (adapter == null || !adapter.isEnabled) throw IOException("Bluetooth is off")
+        val device = adapter.getRemoteDevice(address)
+        handshakeFrames = Channel(Channel.UNLIMITED)
+        reassembler.reset()
+        val c = GattClient(context, device, ::onNotify, ::onLinkLost)
+        client = c
+
+        update {
+            it.copy(
+                phase = if (autoConnect) Phase.RECONNECTING else Phase.CONNECTING,
+                message = if (autoConnect) "Czekam na kamerę w zasięgu" else null,
+            )
+        }
+        if (autoConnect) c.connect(true) else withTimeout(25_000) { c.connect(false) }
+        update { it.copy(phase = Phase.CONNECTING, message = "Link BLE nawiązany") }
+        delay(400)
+        try {
+            c.requestMtu(512)
+        } catch (e: TimeoutCancellationException) {
+            AppLog.w(TAG, "MTU request timed out, continuing with mtu=${c.mtu}")
+        }
+        c.discover()
+        c.enableNotifications()
+        AppLog.i(TAG, "GATT ready, mtu=${c.mtu}, write props=0x%02X".format(c.writeChar!!.properties))
+
+        handshake(address)
+        prefs.setPaired(address, true)
+        onEstablished()
+        update { it.copy(phase = Phase.CONNECTED, message = null, verifyCode = null) }
+
+        queryVersion()
+        subscribeStatus()
+
+        val st = c.disconnected.await()
+        throw IOException("link lost (status=$st)")
+    }
+
+    /** connect_logic_protocol_connect() */
+    private suspend fun handshake(address: String) {
+        val paired = prefs.isPaired(address)
+        val verifyMode = if (paired) Commands.VERIFY_MODE_NONE else Commands.VERIFY_MODE_REQUIRED
+        val code = Random.nextInt(10000)
+        val myId = prefs.deviceId
+        update {
+            it.copy(
+                phase = if (paired) Phase.HANDSHAKE else Phase.WAITING_APPROVAL,
+                verifyCode = code,
+                message = if (paired) null else "Zaakceptuj połączenie na ekranie kamery",
+            )
+        }
+        AppLog.i(TAG, "handshake: device_id=0x%08X mac=%s verify_mode=%d verify_data=%d".format(
+            myId, prefs.mac.toHex(":"), verifyMode, code))
+
+        val (set, id) = Commands.CONNECTION
+        sendCommand(set, id, CmdType.CMD_WAIT_RESULT,
+            Commands.connectionRequest(myId, prefs.mac, verifyMode, code), awaitReply = false)
+
+        val timeout = if (paired) 30_000L else 90_000L
+        try {
+            withTimeout(timeout) {
+                while (true) {
+                    val f = handshakeFrames.receive()
+                    if (f.isResponse) {
+                        val r = Commands.parseConnectionResponse(f.payload)
+                        AppLog.i(TAG, "connection ACK: ret_code=${r?.retCode} camera device_id=${r?.deviceId?.let { "0x%X".format(it) }}")
+                        if (r != null && r.retCode != 0) {
+                            prefs.setPaired(address, false)
+                            throw IOException("camera answered ret_code=${r.retCode}")
+                        }
+                        if (!paired) update { it.copy(phase = Phase.WAITING_APPROVAL) }
+                        continue
+                    }
+                    val req = Commands.parseConnectionRequest(f.payload)
+                    if (req == null) {
+                        AppLog.w(TAG, "unparseable connection request from camera")
+                        continue
+                    }
+                    AppLog.i(TAG, "camera connection request: device_id=0x%X verify_mode=%d verify_data=%d".format(
+                        req.deviceId, req.verifyMode, req.verifyData))
+                    update { it.copy(cameraDeviceId = req.deviceId) }
+                    if (req.verifyMode != Commands.VERIFY_MODE_RESULT) {
+                        AppLog.w(TAG, "unexpected verify_mode ${req.verifyMode}, waiting further")
+                        continue
+                    }
+                    if (req.verifyData != 0) throw RejectedException("verify_data=${req.verifyData}")
+                    // Reply with the camera's own SEQ, as a response frame.
+                    val ack = Frame(CmdType.ACK_NO_RESPONSE, f.seq, set, id, Commands.connectionResponse(myId))
+                    writeFrame(ack, noResponse = true)
+                    AppLog.i(TAG, "protocol connection established")
+                    return@withTimeout
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            if (paired) {
+                // Camera may have lost its pairing record; ask for confirmation next time.
+                prefs.setPaired(address, false)
+            }
+            throw IOException("handshake timeout (${timeout / 1000}s)")
+        }
+    }
+
+    private suspend fun queryVersion() {
+        val (set, id) = Commands.VERSION
+        val r = sendCommand(set, id, CmdType.CMD_WAIT_RESULT, ByteArray(0))
+        val v = r?.let { Commands.parseVersion(it.payload) }
+        if (v != null) {
+            AppLog.i(TAG, "version: ack=${v.ack} product='${v.productId}' sdk='${v.sdkVersion}'")
+            update { it.copy(version = "${v.productId} ${v.sdkVersion}".trim()) }
+        } else {
+            AppLog.w(TAG, "version query: no/invalid response")
+        }
+    }
+
+    private suspend fun subscribeStatus() {
+        val (set, id) = Commands.STATUS_SUBSCRIBE
+        sendCommand(set, id, CmdType.CMD_NO_RESPONSE, Commands.statusSubscribe())
+        AppLog.i(TAG, "subscribed to status push (mode 3, 2 Hz)")
+    }
+
+    // ---------------------------------------------------------------- I/O
+
+    private suspend fun sendCommand(
+        cmdSet: Int,
+        cmdId: Int,
+        cmdType: Int,
+        payload: ByteArray,
+        timeoutMs: Long = 5000,
+        awaitReply: Boolean = cmdType and 0x1F != 0,
+    ): Frame? {
+        var s = seq.incrementAndGet() and 0xFFFF
+        if (s == 0) s = seq.incrementAndGet() and 0xFFFF
+        val f = Frame(cmdType, s, cmdSet, cmdId, payload)
+        val d = if (awaitReply) CompletableDeferred<Frame>().also { pending[s] = it } else null
+        try {
+            writeFrame(f, noResponse = cmdType and 0x1F == 0)
+        } catch (e: Exception) {
+            pending.remove(s)
+            throw e
+        }
+        if (d == null) return null
+        val r = withTimeoutOrNull(timeoutMs) { d.await() }
+        if (r == null) {
+            pending.remove(s)
+            AppLog.w("RX", "timeout waiting for ACK of ${f.key} seq=$s")
+        }
+        return r
+    }
+
+    private suspend fun writeFrame(f: Frame, noResponse: Boolean) {
+        val c = client ?: throw IOException("not connected")
+        val bytes = f.encode()
+        AppLog.i("TX", "$f [${bytes.toHex()}]")
+        c.write(bytes, noResponse)
+    }
+
+    private fun onNotify(data: ByteArray) {
+        AppLog.v("RX", "notify ${data.size}B")
+        reassembler.feed(data)
+    }
+
+    private fun onFrame(f: Frame, raw: ByteArray) {
+        val isStatus = !f.isResponse && f.cmdSet == 0x1D && (f.cmdId == 0x02 || f.cmdId == 0x06)
+        if (!isStatus) AppLog.i("RX", "$f [${raw.toHex()}]") else AppLog.v("RX", "$f [${raw.toHex()}]")
+
+        if (f.cmdSet == 0x00 && f.cmdId == 0x19) {
+            handshakeFrames.trySend(f)
+            return
+        }
+        if (f.isResponse) {
+            val d = pending.remove(f.seq)
+            if (d != null) d.complete(f) else AppLog.w("RX", "ACK without pending request: $f")
+            return
+        }
+        when {
+            f.cmdSet == 0x1D && f.cmdId == 0x02 -> onStatus(f.payload, raw)
+            f.cmdSet == 0x1D && f.cmdId == 0x06 -> onNewStatus(f.payload)
+            else -> AppLog.w("RX", "unhandled command from camera: $f${if (f.wantsReply) " (wants reply)" else ""}")
+        }
+    }
+
+    private fun onStatus(p: ByteArray, raw: ByteArray) {
+        val s = CameraStatus.parse(p) ?: run {
+            AppLog.w("RX", "status push too short: ${p.size}B")
+            return
+        }
+        val prev = _status.value
+        _status.value = s
+        val key = "mode=${Commands.modeName(s.cameraMode)} status=${s.statusName} bat=${s.batteryPercent}% " +
+            "power=${s.powerMode} temp=${s.tempOver} user=${s.userMode} res=${CameraStatus.resolutionName(s.videoResolution)} " +
+            "fps=${CameraStatus.fpsName(s.fpsIdx)} eis=${s.eisMode} next=${s.modeNextFlag}"
+        if (key != lastStatusKey) {
+            if (prev == null) AppLog.i("RX", "first status push (${p.size}B): [${raw.toHex()}]")
+            AppLog.i(TAG, "status: $key free=${s.remainCapacityMb}MB remain=${s.remainTimeSec}s rec=${s.recordTimeSec}s")
+            lastStatusKey = key
+        }
+    }
+
+    private fun onNewStatus(p: ByteArray) {
+        val m = Commands.parseNewStatus(p) ?: return
+        if (m != _modeName.value) AppLog.i(TAG, "mode name: '${m.name}' params: '${m.param}'")
+        _modeName.value = m
+    }
+
+    private fun onLinkLost(status: Int) {
+        AppLog.w(TAG, "BLE link lost, status=$status")
+        handshakeFrames.close(IOException("link lost"))
+        failPending()
+    }
+
+    private fun failPending() {
+        val err = IOException("link lost")
+        pending.values.forEach { it.completeExceptionally(err) }
+        pending.clear()
+    }
+
+    private fun closeClient() {
+        client?.close()
+        client = null
+    }
+
+    private fun resetSessionState() {
+        failPending()
+        _status.value = null
+        _modeName.value = null
+        _busy.value = false
+        lastStatusKey = null
+    }
+}
