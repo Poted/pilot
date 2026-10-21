@@ -148,6 +148,10 @@ data class CameraStatus(
     val fpsIdx: Int?,
     val eisMode: Int?,
     val recordTimeSec: Int?,
+    val photoRatio: Int?,
+    val countdownSec: Int?,
+    val timelapseInterval: Int?,
+    val timelapseDurationSec: Int?,
     val remainCapacityMb: Long?,
     val remainPhotoNum: Long?,
     val remainTimeSec: Long?,
@@ -155,6 +159,7 @@ data class CameraStatus(
     val powerMode: Int?,
     val modeNextFlag: Int?,
     val tempOver: Int?,
+    val photoCountdownMs: Long?,
     val loopRecordSec: Int?,
     val batteryPercent: Int?,
 ) {
@@ -184,6 +189,10 @@ data class CameraStatus(
                 fpsIdx = u8(3),
                 eisMode = u8(4),
                 recordTimeSec = u16(5),
+                photoRatio = u8(8),
+                countdownSec = u16(9),
+                timelapseInterval = u16(11),
+                timelapseDurationSec = u16(13),
                 remainCapacityMb = u32(15),
                 remainPhotoNum = u32(19),
                 remainTimeSec = u32(23),
@@ -191,6 +200,7 @@ data class CameraStatus(
                 powerMode = u8(28),
                 modeNextFlag = u8(29),
                 tempOver = u8(30),
+                photoCountdownMs = u32(31),
                 loopRecordSec = u16(35),
                 batteryPercent = u8(37),
             )
@@ -206,7 +216,24 @@ data class CameraStatus(
             95 -> "2.7K 4:3"
             103 -> "4K 4:3"
             109 -> "4K 9:16"
-            else -> "res#$v"
+            else -> "#$v"
+        }
+
+        fun eisName(v: Int?): String? = when (v) {
+            null -> null
+            0 -> "Wył."
+            1 -> "RockSteady"
+            2 -> "HorizonSteady"
+            3 -> "RockSteady+"
+            4 -> "HorizonBalancing"
+            else -> "eis#$v"
+        }
+
+        fun ratioName(v: Int?): String? = when (v) {
+            null -> null
+            0 -> "4:3"
+            1 -> "16:9"
+            else -> "#$v"
         }
 
         fun fpsName(v: Int?): String? = when (v) {

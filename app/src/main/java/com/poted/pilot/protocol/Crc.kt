@@ -20,6 +20,19 @@ object Crc {
         c
     }
 
+    private val table8 = IntArray(256) { i ->
+        var c = i
+        repeat(8) { c = if (c and 1 != 0) (c ushr 1) xor 0x8C else c ushr 1 }
+        c
+    }
+
+    /** DUML header CRC8 (reflected 0x31, seed 0x77); only used to recognise DUML frames. */
+    fun crc8(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Int {
+        var crc = 0x77
+        for (i in offset until offset + length) crc = table8[(crc xor data[i].toInt()) and 0xFF]
+        return crc
+    }
+
     fun crc16(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Int {
         var crc = SEED
         for (i in offset until offset + length) {

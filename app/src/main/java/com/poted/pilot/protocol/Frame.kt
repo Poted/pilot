@@ -91,10 +91,15 @@ class Frame(
  * Splits a byte stream from BLE notifications into frames. The ESP32 demo assumes one
  * notification == one frame (MTU 500); this also copes with frames split across or
  * concatenated within notifications, and resynchronises on garbage.
+ *
+ * The camera also pushes DJI DUML frames (SOF 0x55, ~1 Hz) on the same characteristic.
+ * Per the DJI FAQ they can be ignored, but they must be skipped by their length: they
+ * may contain 0xAA bytes that would otherwise be mistaken for an R SDK frame start.
  */
 class FrameReassembler(
     private val onFrame: (Frame, ByteArray) -> Unit,
     private val onError: (String, ByteArray) -> Unit,
+    private val onForeign: (ByteArray) -> Unit = {},
 ) {
     private var buf = ByteArray(0)
 
@@ -102,41 +107,63 @@ class FrameReassembler(
         buf = ByteArray(0)
     }
 
+    private fun drop(n: Int) {
+        buf = buf.copyOfRange(n, buf.size)
+    }
+
     fun feed(chunk: ByteArray) {
         buf += chunk
-        while (true) {
-            val sof = buf.indexOfFirst { it.toInt() and 0xFF == Frame.SOF }
-            if (sof < 0) {
-                if (buf.isNotEmpty()) onError("dropping ${buf.size} bytes without SOF", buf)
+        while (buf.isNotEmpty()) {
+            val start = buf.indexOfFirst { val b = it.toInt() and 0xFF; b == Frame.SOF || b == DUML_SOF }
+            if (start < 0) {
+                onError("dropping ${buf.size} bytes without SOF", buf)
                 buf = ByteArray(0)
                 return
             }
-            if (sof > 0) {
-                onError("dropping $sof bytes before SOF", buf.copyOfRange(0, sof))
-                buf = buf.copyOfRange(sof, buf.size)
+            if (start > 0) {
+                onError("dropping $start bytes before SOF", buf.copyOfRange(0, start))
+                drop(start)
+            }
+            if (buf.u8(0) == DUML_SOF) {
+                if (buf.size < 4) return
+                val len = buf.u16(1) and 0x3FF
+                if (Crc.crc8(buf, 0, 3) != buf.u8(3) || len < DUML_MIN_LEN) {
+                    onError("bad DUML header, resync", buf.copyOfRange(0, 4))
+                    drop(1)
+                    continue
+                }
+                if (buf.size < len) return
+                onForeign(buf.copyOfRange(0, len))
+                drop(len)
+                continue
             }
             if (buf.size < 3) return
             val len = buf.u16(1) and 0x3FF
             if (len < Frame.MIN_LEN) {
                 onError("implausible length $len, resync", buf.copyOfRange(0, 3))
-                buf = buf.copyOfRange(1, buf.size)
+                drop(1)
                 continue
             }
             if (buf.size < 12) return
             // Validate header CRC early so a stray 0xAA inside garbage doesn't stall us.
             if (buf.u16(10) != Crc.crc16(buf, 0, 10)) {
                 onError("header CRC16 mismatch, resync", buf.copyOfRange(0, 12))
-                buf = buf.copyOfRange(1, buf.size)
+                drop(1)
                 continue
             }
             if (buf.size < len) return
             val raw = buf.copyOfRange(0, len)
-            buf = buf.copyOfRange(len, buf.size)
+            drop(len)
             when (val r = Frame.decode(raw)) {
                 is Frame.Companion.DecodeResult.Ok -> onFrame(r.frame, raw)
                 is Frame.Companion.DecodeResult.Error -> onError(r.reason, raw)
             }
         }
+    }
+
+    companion object {
+        const val DUML_SOF = 0x55
+        const val DUML_MIN_LEN = 13
     }
 }
 

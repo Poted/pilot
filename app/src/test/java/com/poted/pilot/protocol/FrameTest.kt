@@ -109,4 +109,39 @@ class FrameTest {
         assertEquals("Video", m.name)
         assertEquals("4K|60fps|", m.param)
     }
+
+    // Real frames captured from an Osmo Action 6 (firmware AC203-03.04.80.15).
+    private val oa6StatusPush =
+        "AA 38 00 01 00 42 00 00 29 C7 FF 82 1D 02 01 01 7D 03 04 00 00 00 00 00 00 00 00 00 00 01 61 00 00 00 00 00 00 B0 07 00 00 00 00 00 00 00 00 00 00 00 00 56 47 8A AB 35"
+    // DUML frame whose SEQ byte is 0xAA (it used to desync the parser).
+    private val oa6DumlWithAa =
+        "55 2F 04 63 05 25 AA 09 00 0D 02 00 25 10 00 00 0F FB FF FF 00 00 00 00 00 00 00 00 F0 00 00 56 00 00 00 00 00 00 20 00 00 00 00 00 01 84 AB"
+
+    @Test
+    fun duml8MatchesCamera() {
+        assertEquals(0x63, Crc.crc8(hexToBytes("55 2F 04")))
+    }
+
+    @Test
+    fun skipsDumlFramesAndKeepsStatus() {
+        val got = mutableListOf<Frame>()
+        val errors = mutableListOf<String>()
+        var foreign = 0
+        val r = FrameReassembler({ f, _ -> got += f }, { e, _ -> errors += e }, { foreign++ })
+        val duml = hexToBytes(oa6DumlWithAa)
+        val status = hexToBytes(oa6StatusPush)
+        // One notification with DUML + status glued together, then DUML split in two.
+        r.feed(duml + status)
+        r.feed(duml.copyOfRange(0, 6))
+        r.feed(duml.copyOfRange(6, duml.size))
+        assertEquals(listOf<String>(), errors)
+        assertEquals(2, foreign)
+        assertEquals(1, got.size)
+        val s = CameraStatus.parse(got[0].payload)!!
+        assertEquals(0x01, s.cameraMode)
+        assertEquals(125, s.videoResolution)
+        assertEquals(24833L, s.remainCapacityMb)
+        assertEquals(1968L, s.remainTimeSec)
+        assertEquals(86, s.batteryPercent)
+    }
 }

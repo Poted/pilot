@@ -129,9 +129,12 @@ class CameraService : Service() {
         if (scope != null) return
         val s = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         scope = s
-        combine(controller.connection, controller.status, controller.modeName, controller.busy) { c, st, m, b ->
-            listOf<Any?>(c, st, m, b)
-        }.distinctUntilChanged().onEach {
+        combine(
+            listOf(
+                controller.connection, controller.status, controller.modeName,
+                controller.busy, controller.asleep, controller.notice,
+            )
+        ) { it.toList() }.distinctUntilChanged().onEach {
             val phase = controller.connection.value.phase
             if (phase == Phase.IDLE || phase == Phase.FAILED) {
                 stopSelfCleanly()
@@ -154,15 +157,20 @@ class CameraService : Service() {
         val c = controller.connection.value
         val st = controller.status.value
         val recording = st?.isRecording == true
+        val asleep = controller.asleep.value
         val name = c.name ?: "Osmo"
 
         val title = when {
+            c.phase == Phase.CONNECTED && asleep -> "$name — uśpiona"
             c.phase == Phase.CONNECTED && recording -> "● REC ${formatDuration(st?.recordTimeSec?.toLong())} — $name"
             c.phase == Phase.CONNECTED -> "$name — gotowa"
             c.phase == Phase.WAITING_APPROVAL -> "$name — potwierdź na kamerze (kod ${c.verifyCode})"
             else -> "$name — ${c.phase.label}"
         }
-        val text = if (st != null) {
+        val notice = controller.notice.value?.takeIf { System.currentTimeMillis() - it.at < 30_000 }
+        val text = if (notice != null) {
+            notice.text
+        } else if (st != null) {
             val parts = mutableListOf<String>()
             st.batteryPercent?.let { parts += "Bateria $it%" }
             st.remainTimeSec?.let { parts += "zostało ${formatDuration(it)}" }
@@ -200,9 +208,10 @@ class CameraService : Service() {
             .setColor(if (recording) 0xFFD32F2F.toInt() else 0xFF455A64.toInt())
             .setColorized(recording)
 
-        if (c.phase == Phase.CONNECTED) {
+        if (c.phase == Phase.CONNECTED || controller.busy.value) {
             val label = when {
                 controller.busy.value -> "…"
+                asleep -> "● START (wybudź)"
                 recording -> "■ STOP"
                 else -> "● START"
             }

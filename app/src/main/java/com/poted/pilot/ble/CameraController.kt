@@ -83,23 +83,46 @@ class CameraController private constructor(private val context: Context) {
     private val _modeName = MutableStateFlow<Commands.ModeName?>(null)
     val modeName: StateFlow<Commands.ModeName?> = _modeName
     private val _busy = MutableStateFlow(false)
-    /** True while a record start/stop command is in flight. */
+    /** True while a record start/stop command is in flight or a wake-then-record is pending. */
     val busy: StateFlow<Boolean> = _busy
+    private val _asleep = MutableStateFlow(false)
+    /**
+     * Camera reported power_mode=3 or stopped pushing status. The DJI FAQ says nothing may be
+     * sent to a sleeping camera: commands get queued and run when it wakes up (minutes later).
+     */
+    val asleep: StateFlow<Boolean> = _asleep
+    private val _notice = MutableStateFlow<Notice?>(null)
+    /** Short user-facing message (errors, hints), shown in the app and the notification. */
+    val notice: StateFlow<Notice?> = _notice
+
+    data class Notice(val text: String, val error: Boolean, val at: Long = System.currentTimeMillis())
 
     private var sessionJob: Job? = null
+    private var watchdogJob: Job? = null
     @Volatile private var client: GattClient? = null
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<Frame>>()
     @Volatile private var handshakeFrames = Channel<Frame>(Channel.UNLIMITED)
     private val seq = AtomicInteger(Random.nextInt(1, 0x8000))
     private var lastStatusKey: String? = null
+    @Volatile private var lastStatusAt = 0L
+    @Volatile private var sleepAckAt = 0L
+    /** Start recording as soon as the camera is awake again (set by START while asleep). */
+    @Volatile private var startAfterWakeUntil = 0L
+    private val haptics = Haptics(context)
 
     private val reassembler = FrameReassembler(
         onFrame = { f, raw -> onFrame(f, raw) },
         onError = { reason, raw -> AppLog.w("RX", "bad data: $reason [${raw.toHex()}]") },
+        onForeign = { raw -> AppLog.v("RX", "DUML frame ignored (${raw.size}B)") },
     )
 
     private fun update(block: (Connection) -> Connection) {
         _connection.value = block(_connection.value)
+    }
+
+    private fun notice(text: String, error: Boolean = false) {
+        if (error) AppLog.w(TAG, "notice: $text") else AppLog.i(TAG, "notice: $text")
+        _notice.value = Notice(text, error)
     }
 
     // ---------------------------------------------------------------- public API
@@ -108,6 +131,8 @@ class CameraController private constructor(private val context: Context) {
         scanner.stop()
         sessionJob?.cancel()
         closeClient()
+        startAfterWakeUntil = 0
+        resetSessionState()
         prefs.lastAddress = address
         if (name != null) prefs.lastName = name
         update { Connection(phase = Phase.CONNECTING, address = address, name = name ?: prefs.lastName) }
@@ -119,6 +144,7 @@ class CameraController private constructor(private val context: Context) {
         AppLog.i(TAG, "disconnect requested by user")
         sessionJob?.cancel()
         sessionJob = null
+        startAfterWakeUntil = 0
         closeClient()
         resetSessionState()
         update { it.copy(phase = Phase.IDLE, message = null, verifyCode = null) }
@@ -132,32 +158,64 @@ class CameraController private constructor(private val context: Context) {
     val isConnected: Boolean get() = _connection.value.phase == Phase.CONNECTED
 
     fun toggleRecord() {
-        if (!isConnected) {
-            AppLog.w(TAG, "record: not connected")
+        if (_busy.value) return
+        val phase = _connection.value.phase
+        if (_asleep.value || (phase == Phase.RECONNECTING && startAfterWakeUntil > System.currentTimeMillis())) {
+            wakeThenRecord()
             return
         }
-        if (_busy.value) return
-        val start = _status.value?.isRecording != true
+        if (!isConnected) {
+            notice("Brak połączenia z kamerą", error = true)
+            return
+        }
+        sendRecord(start = _status.value?.isRecording != true)
+    }
+
+    private fun sendRecord(start: Boolean) {
         _busy.value = true
         scope.launch {
             try {
                 AppLog.i(TAG, if (start) "START recording" else "STOP recording")
                 val (set, id) = Commands.RECORD
-                val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.recordControl(start))
+                val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.recordControl(start), timeoutMs = 3000)
                 if (r == null) {
-                    AppLog.w(TAG, "record: no response from camera")
-                } else {
-                    val ret = Commands.retCode(r.payload)
-                    AppLog.i(TAG, "record ${if (start) "start" else "stop"} ret_code=$ret")
+                    notice("Kamera nie odpowiedziała na ${if (start) "START" else "STOP"}", error = true)
+                    return@launch
+                }
+                val ret = Commands.retCode(r.payload)
+                AppLog.i(TAG, "record ${if (start) "start" else "stop"} ret_code=$ret")
+                if (ret != 0) {
+                    notice("Kamera odrzuciła ${if (start) "START" else "STOP"} (kod $ret)", error = true)
+                    return@launch
+                }
+                // Keep the button disabled until a status push confirms the change (max 2 s).
+                withTimeoutOrNull(2000) {
+                    while (_status.value?.isRecording != start) delay(100)
                 }
             } catch (e: Exception) {
                 AppLog.e(TAG, "record failed", e)
+                notice("Błąd wysyłania: ${e.message}", error = true)
             } finally {
-                // Hold the button until the next status push confirms the change (max 3 s).
-                withTimeoutOrNull(3000) {
-                    while (_status.value?.isRecording != start) delay(100)
-                }
                 _busy.value = false
+            }
+        }
+    }
+
+    /**
+     * START pressed while the camera sleeps: send the wake-up advertisement and record once the
+     * camera reconnects and reports power_mode=0. Nothing is sent to the sleeping camera.
+     */
+    private fun wakeThenRecord() {
+        startAfterWakeUntil = System.currentTimeMillis() + 25_000
+        _busy.value = true
+        notice("Kamera uśpiona — wybudzam, nagrywanie ruszy po wybudzeniu")
+        wake()
+        scope.launch {
+            delay(25_000)
+            if (startAfterWakeUntil != 0L && System.currentTimeMillis() >= startAfterWakeUntil) {
+                startAfterWakeUntil = 0
+                _busy.value = false
+                notice("Nie udało się wybudzić kamery. Włącz ją przyciskiem na kamerze.", error = true)
             }
         }
     }
@@ -165,7 +223,9 @@ class CameraController private constructor(private val context: Context) {
     fun switchMode(mode: Int) = fire("mode switch -> ${Commands.modeName(mode)}") {
         val (set, id) = Commands.MODE_SWITCH
         val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.modeSwitch(mode))
-        AppLog.i(TAG, "mode switch ret_code=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+        val ret = r?.let { Commands.retCode(it.payload) }
+        AppLog.i(TAG, "mode switch ret_code=${ret ?: "no response"}")
+        if (ret != 0) notice("Zmiana trybu nie powiodła się", error = true)
     }
 
     fun quickSwitch() = fire("QS key") {
@@ -177,10 +237,15 @@ class CameraController private constructor(private val context: Context) {
     fun sleep() = fire("power mode -> sleep") {
         val (set, id) = Commands.POWER_MODE
         val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.powerMode(3))
-        AppLog.i(TAG, "sleep ret_code=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+        val ret = r?.let { Commands.retCode(it.payload) }
+        AppLog.i(TAG, "sleep ret_code=${ret ?: "no response"}")
+        if (ret == 0) {
+            sleepAckAt = System.currentTimeMillis()
+            setAsleep(true, "sleep ACK")
+        }
     }
 
-    /** Advertises the wake-up packet for 2 s, then (re)connects if needed. */
+    /** Advertises the wake-up packet, then (re)connects if needed. */
     fun wake() {
         val addr = _connection.value.address ?: prefs.lastAddress
         if (addr == null) {
@@ -188,6 +253,7 @@ class CameraController private constructor(private val context: Context) {
             return
         }
         waker.wake(addr) {
+            AppLog.i(TAG, "wake advertising done; phase=${_connection.value.phase} asleep=${_asleep.value}")
             if (_connection.value.phase == Phase.IDLE || _connection.value.phase == Phase.FAILED) {
                 connect(addr, _connection.value.name)
             }
@@ -196,7 +262,11 @@ class CameraController private constructor(private val context: Context) {
 
     private fun fire(what: String, block: suspend () -> Unit) {
         if (!isConnected) {
-            AppLog.w(TAG, "$what: not connected")
+            notice("Brak połączenia z kamerą", error = true)
+            return
+        }
+        if (_asleep.value) {
+            notice("Kamera uśpiona — najpierw ją wybudź", error = true)
             return
         }
         AppLog.i(TAG, what)
@@ -205,6 +275,26 @@ class CameraController private constructor(private val context: Context) {
                 block()
             } catch (e: Exception) {
                 AppLog.e(TAG, "$what failed", e)
+            }
+        }
+    }
+
+    private fun setAsleep(value: Boolean, why: String) {
+        if (_asleep.value == value) return
+        _asleep.value = value
+        AppLog.i(TAG, if (value) "camera asleep ($why)" else "camera awake ($why)")
+    }
+
+    /** Status pushes arrive at ~2 Hz; silence for several seconds means the camera went to sleep. */
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        lastStatusAt = System.currentTimeMillis()
+        watchdogJob = scope.launch {
+            while (true) {
+                delay(1000)
+                if (isConnected && System.currentTimeMillis() - lastStatusAt > 5000) {
+                    setAsleep(true, "no status push for ${(System.currentTimeMillis() - lastStatusAt) / 1000}s")
+                }
             }
         }
     }
@@ -282,6 +372,7 @@ class CameraController private constructor(private val context: Context) {
 
         queryVersion()
         subscribeStatus()
+        startWatchdog()
 
         val st = c.disconnected.await()
         throw IOException("link lost (status=$st)")
@@ -420,7 +511,7 @@ class CameraController private constructor(private val context: Context) {
         }
         if (f.isResponse) {
             val d = pending.remove(f.seq)
-            if (d != null) d.complete(f) else AppLog.w("RX", "ACK without pending request: $f")
+            if (d != null) d.complete(f) else AppLog.v("RX", "ACK without pending request: $f")
             return
         }
         when {
@@ -437,13 +528,32 @@ class CameraController private constructor(private val context: Context) {
         }
         val prev = _status.value
         _status.value = s
+        lastStatusAt = System.currentTimeMillis()
+        // The camera may push a few stale power_mode=0 frames while falling asleep (DJI FAQ).
+        val falling = System.currentTimeMillis() - sleepAckAt < 3000
+        if (!falling) setAsleep(s.powerMode == 3, "power_mode=${s.powerMode}")
+        if (prev != null && prev.isRecording != s.isRecording) {
+            haptics.recordChanged(s.isRecording)
+            if (s.isRecording) _notice.value = null
+        }
+        if (startAfterWakeUntil != 0L && s.powerMode != 3 && !falling) {
+            val valid = System.currentTimeMillis() < startAfterWakeUntil
+            startAfterWakeUntil = 0
+            _busy.value = false
+            if (valid && !s.isRecording) {
+                AppLog.i(TAG, "camera awake, starting the recording requested while asleep")
+                sendRecord(start = true)
+            }
+        }
         val key = "mode=${Commands.modeName(s.cameraMode)} status=${s.statusName} bat=${s.batteryPercent}% " +
             "power=${s.powerMode} temp=${s.tempOver} user=${s.userMode} res=${CameraStatus.resolutionName(s.videoResolution)} " +
             "fps=${CameraStatus.fpsName(s.fpsIdx)} eis=${s.eisMode} next=${s.modeNextFlag}"
-        if (key != lastStatusKey) {
+        val fullKey = "$key ratio=${s.photoRatio} cd=${s.countdownSec} tl=${s.timelapseInterval}/${s.timelapseDurationSec} " +
+            "photos=${s.remainPhotoNum} loop=${s.loopRecordSec} pcd=${s.photoCountdownMs}"
+        if (fullKey != lastStatusKey) {
             if (prev == null) AppLog.i("RX", "first status push (${p.size}B): [${raw.toHex()}]")
-            AppLog.i(TAG, "status: $key free=${s.remainCapacityMb}MB remain=${s.remainTimeSec}s rec=${s.recordTimeSec}s")
-            lastStatusKey = key
+            AppLog.i(TAG, "status: $fullKey free=${s.remainCapacityMb}MB remain=${s.remainTimeSec}s rec=${s.recordTimeSec}s")
+            lastStatusKey = fullKey
         }
     }
 
@@ -471,10 +581,14 @@ class CameraController private constructor(private val context: Context) {
     }
 
     private fun resetSessionState() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        _asleep.value = false
         failPending()
         _status.value = null
         _modeName.value = null
-        _busy.value = false
+        // A wake-then-record survives the reconnect that waking the camera causes.
+        _busy.value = startAfterWakeUntil > System.currentTimeMillis()
         lastStatusKey = null
     }
 }
