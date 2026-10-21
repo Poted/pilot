@@ -110,7 +110,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             p += Manifest.permission.BLUETOOTH_SCAN
             p += Manifest.permission.BLUETOOTH_CONNECT
-            p += Manifest.permission.BLUETOOTH_ADVERTISE
         } else {
             p += Manifest.permission.ACCESS_FINE_LOCATION
         }

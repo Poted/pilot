@@ -2,15 +2,10 @@ package com.poted.pilot.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.AdvertiseData
-import android.bluetooth.le.AdvertisingSet
-import android.bluetooth.le.AdvertisingSetCallback
-import android.bluetooth.le.AdvertisingSetParameters
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.poted.pilot.log.AppLog
@@ -120,90 +115,5 @@ class Scanner(private val context: Context) {
         }
         _scanning.value = false
         AppLog.i(TAG, "scan stop, found ${_devices.value.count { it.isDjiCamera }} DJI camera(s)")
-    }
-}
-
-/**
- * Wakes a sleeping camera by advertising "WKP" + its MAC in reverse byte order for 2 s
- * (ble_start_advertising() in the demo). Raw AD: 0A FF 'W' 'K' 'P' m5 m4 m3 m2 m1 m0.
- * On Android the first two bytes of the manufacturer data are the company id (LE), so
- * company id = 0x4B57 ("WK") and data = 'P' + reversed MAC.
- *
- * The ESP32 packet contains only that one AD structure. Legacy Android advertising adds a
- * Flags AD in front when connectable, so this uses AdvertisingSet: variant 1 is ADV_IND with
- * discoverable=false (no Flags, API 34+), variant 2 is non-connectable (no Flags either).
- */
-@SuppressLint("MissingPermission")
-class Waker(private val context: Context) {
-    companion object {
-        private const val TAG = "Wake"
-        private const val VARIANT_MS = 3000L
-    }
-
-    private val main = Handler(Looper.getMainLooper())
-    private var active: AdvertisingSetCallback? = null
-
-    private val advertiser get() =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeAdvertiser
-
-    fun wake(cameraAddress: String, onDone: () -> Unit = {}) {
-        if (advertiser == null) {
-            AppLog.e(TAG, "BLE advertising not supported / Bluetooth off")
-            onDone()
-            return
-        }
-        stop()
-        main.removeCallbacksAndMessages(null)
-        val mac = cameraAddress.split(":").map { it.toInt(16).toByte() }
-        val payload = byteArrayOf('P'.code.toByte()) + mac.reversed().toByteArray()
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .addManufacturerData(0x4B57, payload)
-            .build()
-        AppLog.i(TAG, "wake $cameraAddress, AD: 0A FF 57 4B ${payload.toHex()}")
-        start(data, connectable = true)
-        main.postDelayed({
-            stop()
-            start(data, connectable = false)
-            main.postDelayed({
-                stop()
-                onDone()
-            }, VARIANT_MS)
-        }, VARIANT_MS)
-    }
-
-    private fun start(data: AdvertiseData, connectable: Boolean) {
-        val adv = advertiser ?: return
-        val b = AdvertisingSetParameters.Builder()
-            .setLegacyMode(true)
-            .setConnectable(connectable)
-            .setScannable(connectable) // legacy connectable advertising must be scannable
-            .setInterval(AdvertisingSetParameters.INTERVAL_MIN)
-            .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) b.setDiscoverable(false)
-        val label = if (connectable) "ADV_IND" else "ADV_NONCONN_IND"
-        val cb = object : AdvertisingSetCallback() {
-            override fun onAdvertisingSetStarted(set: AdvertisingSet?, txPower: Int, status: Int) {
-                if (status == ADVERTISE_SUCCESS) AppLog.i(TAG, "$label started (tx=$txPower dBm)")
-                else AppLog.e(TAG, "$label failed, status=$status")
-            }
-        }
-        active = cb
-        try {
-            adv.startAdvertisingSet(b.build(), data, null, null, null, cb)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "$label start", e)
-        }
-    }
-
-    fun stop() {
-        val cb = active ?: return
-        active = null
-        try {
-            advertiser?.stopAdvertisingSet(cb)
-        } catch (e: Exception) {
-            AppLog.w(TAG, "stopAdvertisingSet: ${e.message}")
-        }
     }
 }

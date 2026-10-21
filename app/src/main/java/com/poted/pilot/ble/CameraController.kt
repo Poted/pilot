@@ -1,15 +1,11 @@
 package com.poted.pilot.ble
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import androidx.core.content.ContextCompat
 import com.poted.pilot.gps.GpsFeeder
 import com.poted.pilot.log.AppLog
+import com.poted.pilot.log.RateLimiter
 import com.poted.pilot.protocol.CameraStatus
 import com.poted.pilot.protocol.CmdType
 import com.poted.pilot.protocol.Commands
@@ -69,7 +65,6 @@ private class RejectedException(msg: String) : Exception(msg)
 class CameraController private constructor(private val context: Context) {
     companion object {
         private const val TAG = "Cam"
-        private const val WAKE_WINDOW_MS = 30_000L
         @Volatile private var instance: CameraController? = null
 
         fun get(context: Context): CameraController =
@@ -81,7 +76,6 @@ class CameraController private constructor(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val prefs = Prefs(context)
     val scanner = Scanner(context)
-    private val waker = Waker(context)
 
     private val _connection = MutableStateFlow(Connection(address = prefs.lastAddress, name = prefs.lastName))
     val connection: StateFlow<Connection> = _connection
@@ -109,27 +103,21 @@ class CameraController private constructor(private val context: Context) {
     @Volatile private var client: GattClient? = null
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<Frame>>()
     @Volatile private var handshakeFrames = Channel<Frame>(Channel.UNLIMITED)
+    /** 0019 frames go to [handshakeFrames] only while the handshake runs. */
+    @Volatile private var inHandshake = false
     private val seq = AtomicInteger(Random.nextInt(1, 0x8000))
     private var lastStatusKey: String? = null
     @Volatile private var lastStatusAt = 0L
     @Volatile private var sleepAckAt = 0L
-    /** Start recording as soon as the camera is awake again (set by START while asleep). */
-    @Volatile private var startAfterWakeUntil = 0L
+    /** When this app last sent START/STOP; used to tell app stops from other stops. */
+    @Volatile private var lastRecordCommandAt = 0L
     private val haptics = Haptics(context)
     val gps = GpsFeeder(context)
+    private val alerts = Alerts(context)
+    private val rxLimiter = RateLimiter(maxPerSecond = 20)
 
     init {
         startGpsPump()
-        ContextCompat.registerReceiver(context, object : BroadcastReceiver() {
-            override fun onReceive(c: Context, i: Intent) {
-                @Suppress("DEPRECATION")
-                val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                if (d.address != _connection.value.address) return
-                val st = i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-                val prev = i.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
-                AppLog.i(TAG, "bond state ${bondName(prev)} -> ${bondName(st)}")
-            }
-        }, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     private val reassembler = FrameReassembler(
@@ -147,14 +135,18 @@ class CameraController private constructor(private val context: Context) {
         _notice.value = Notice(text, error)
     }
 
+    fun dismissNotice() {
+        _notice.value = null
+    }
+
     // ---------------------------------------------------------------- public API
 
     fun connect(address: String, name: String?) {
         scanner.stop()
         sessionJob?.cancel()
         closeClient()
-        startAfterWakeUntil = 0
         resetSessionState()
+        _notice.value = null
         prefs.lastAddress = address
         if (name != null) prefs.lastName = name
         update { Connection(phase = Phase.CONNECTING, address = address, name = name ?: prefs.lastName) }
@@ -166,7 +158,6 @@ class CameraController private constructor(private val context: Context) {
         AppLog.i(TAG, "disconnect requested by user")
         sessionJob?.cancel()
         sessionJob = null
-        startAfterWakeUntil = 0
         closeClient()
         resetSessionState()
         update { it.copy(phase = Phase.IDLE, message = null, verifyCode = null) }
@@ -181,13 +172,13 @@ class CameraController private constructor(private val context: Context) {
 
     fun toggleRecord() {
         if (_busy.value) return
-        val phase = _connection.value.phase
-        if (_asleep.value || (phase == Phase.RECONNECTING && startAfterWakeUntil > System.currentTimeMillis())) {
-            wakeThenRecord()
-            return
-        }
         if (!isConnected) {
             notice("Brak połączenia z kamerą", error = true)
+            return
+        }
+        if (_asleep.value) {
+            // The DJI FAQ: nothing may be sent to a sleeping camera (it would run it after waking).
+            notice("Kamera uśpiona — włącz ją przyciskiem na kamerze", error = true)
             return
         }
         sendRecord(start = _status.value?.isRecording != true)
@@ -195,6 +186,7 @@ class CameraController private constructor(private val context: Context) {
 
     private fun sendRecord(start: Boolean) {
         _busy.value = true
+        lastRecordCommandAt = System.currentTimeMillis()
         scope.launch {
             try {
                 AppLog.i(TAG, if (start) "START recording" else "STOP recording")
@@ -210,6 +202,7 @@ class CameraController private constructor(private val context: Context) {
                     notice("Kamera odrzuciła ${if (start) "START" else "STOP"} (kod $ret)", error = true)
                     return@launch
                 }
+                _notice.value = null
                 // Keep the button disabled until a status push confirms the change (max 2 s).
                 withTimeoutOrNull(2000) {
                     while (_status.value?.isRecording != start) delay(100)
@@ -218,26 +211,8 @@ class CameraController private constructor(private val context: Context) {
                 AppLog.e(TAG, "record failed", e)
                 notice("Błąd wysyłania: ${e.message}", error = true)
             } finally {
+                lastRecordCommandAt = System.currentTimeMillis()
                 _busy.value = false
-            }
-        }
-    }
-
-    /**
-     * START pressed while the camera sleeps: send the wake-up advertisement and record once the
-     * camera reconnects and reports power_mode=0. Nothing is sent to the sleeping camera.
-     */
-    private fun wakeThenRecord() {
-        startAfterWakeUntil = System.currentTimeMillis() + WAKE_WINDOW_MS
-        _busy.value = true
-        notice("Kamera uśpiona — próbuję wybudzić. Jeśli nie wstanie, naciśnij przycisk na kamerze; nagrywanie ruszy samo.")
-        wake()
-        scope.launch {
-            delay(WAKE_WINDOW_MS)
-            if (startAfterWakeUntil != 0L && System.currentTimeMillis() >= startAfterWakeUntil) {
-                startAfterWakeUntil = 0
-                _busy.value = false
-                notice("Nie udało się wybudzić kamery. Włącz ją przyciskiem na kamerze.", error = true)
             }
         }
     }
@@ -247,7 +222,21 @@ class CameraController private constructor(private val context: Context) {
         val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.modeSwitch(mode))
         val ret = r?.let { Commands.retCode(it.payload) }
         AppLog.i(TAG, "mode switch ret_code=${ret ?: "no response"}")
-        if (ret != 0) notice("Zmiana trybu nie powiodła się", error = true)
+        if (ret == 0) {
+            _notice.value = null
+            return@fire
+        }
+        // The ACK sometimes gets lost although the camera switches; trust the status push.
+        delay(1500)
+        if (_status.value?.cameraMode == mode) {
+            AppLog.i(TAG, "mode switch confirmed by status push")
+            _notice.value = null
+        } else {
+            notice(
+                if (r == null) "Kamera nie odpowiedziała na zmianę trybu" else "Kamera odrzuciła zmianę trybu (kod $ret)",
+                error = true,
+            )
+        }
     }
 
     fun quickSwitch() = fire("QS key") {
@@ -265,52 +254,6 @@ class CameraController private constructor(private val context: Context) {
             sleepAckAt = System.currentTimeMillis()
             setAsleep(true, "sleep ACK")
         }
-    }
-
-    /**
-     * Sends the wake-up advertisement (what the ESP32 demo does) while the BLE link stays up.
-     * Tested on an Osmo Action 6 from Android: the camera does not react, most likely because
-     * Android advertises from a random address the camera doesn't know. Dropping the link does
-     * not help either: the sleeping camera accepts a connection and terminates it right away.
-     */
-    fun wake() {
-        val addr = _connection.value.address ?: prefs.lastAddress
-        if (addr == null) {
-            AppLog.w(TAG, "wake: no known camera")
-            return
-        }
-        val device = bluetoothAdapter()?.getRemoteDevice(addr)
-        AppLog.i(TAG, "wake, phase=${_connection.value.phase}, bond=${bondName(device?.bondState ?: -1)}")
-        waker.wake(addr) {
-            val phase = _connection.value.phase
-            AppLog.i(TAG, "wake advertising done; phase=$phase asleep=${_asleep.value}")
-            if (phase == Phase.IDLE || phase == Phase.FAILED) connect(addr, _connection.value.name)
-        }
-    }
-
-    /**
-     * Experiment for the wake-up packet: Android advertises from a random address that differs
-     * from the one used for the GATT link. If the camera only accepts the wake packet from the
-     * remote it knows, bonding (which hands it this phone's IRK) may let it resolve the address.
-     */
-    fun bondExperiment() {
-        val addr = _connection.value.address ?: prefs.lastAddress ?: return
-        val d = bluetoothAdapter()?.getRemoteDevice(addr) ?: return
-        AppLog.i(TAG, "bond experiment: current bond=${bondName(d.bondState)}")
-        if (d.bondState == BluetoothDevice.BOND_NONE) {
-            val ok = d.createBond()
-            AppLog.i(TAG, "createBond() -> $ok")
-        }
-    }
-
-    private fun bluetoothAdapter() =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-
-    private fun bondName(s: Int) = when (s) {
-        BluetoothDevice.BOND_NONE -> "NONE"
-        BluetoothDevice.BOND_BONDING -> "BONDING"
-        BluetoothDevice.BOND_BONDED -> "BONDED"
-        else -> s.toString()
     }
 
     /** Sends the latest phone fix to the camera once per second (0017, no reply). */
@@ -345,7 +288,7 @@ class CameraController private constructor(private val context: Context) {
             return
         }
         if (_asleep.value) {
-            notice("Kamera uśpiona — najpierw ją wybudź", error = true)
+            notice("Kamera uśpiona — włącz ją przyciskiem na kamerze", error = true)
             return
         }
         AppLog.i(TAG, what)
@@ -478,6 +421,7 @@ class CameraController private constructor(private val context: Context) {
             Commands.connectionRequest(myId, prefs.mac, verifyMode, code), awaitReply = false)
 
         val timeout = if (paired) 30_000L else 90_000L
+        inHandshake = true
         try {
             withTimeout(timeout) {
                 while (true) {
@@ -518,6 +462,8 @@ class CameraController private constructor(private val context: Context) {
                 prefs.setPaired(address, false)
             }
             throw IOException("handshake timeout (${timeout / 1000}s)")
+        } finally {
+            inHandshake = false
         }
     }
 
@@ -583,10 +529,11 @@ class CameraController private constructor(private val context: Context) {
 
     private fun onFrame(f: Frame, raw: ByteArray) {
         val isStatus = !f.isResponse && f.cmdSet == 0x1D && (f.cmdId == 0x02 || f.cmdId == 0x06)
-        if (!isStatus) AppLog.i("RX", "$f [${raw.toHex()}]") else AppLog.v("RX", "$f [${raw.toHex()}]")
+        if (isStatus) AppLog.v("RX", "$f [${raw.toHex()}]")
+        else if (rxLimiter.allow("RX", "frames from camera")) AppLog.i("RX", "$f [${raw.toHex()}]")
 
         if (f.cmdSet == 0x00 && f.cmdId == 0x19) {
-            handshakeFrames.trySend(f)
+            if (inHandshake) handshakeFrames.trySend(f) else onLateConnectionFrame(f)
             return
         }
         if (f.isResponse) {
@@ -598,6 +545,47 @@ class CameraController private constructor(private val context: Context) {
             f.cmdSet == 0x1D && f.cmdId == 0x02 -> onStatus(f.payload, raw)
             f.cmdSet == 0x1D && f.cmdId == 0x06 -> onNewStatus(f.payload)
             else -> AppLog.w("RX", "unhandled command from camera: $f${if (f.wantsReply) " (wants reply)" else ""}")
+        }
+    }
+
+    /**
+     * A 0019 frame after the handshake. Seen in the field: the camera flooding verify_mode=2,
+     * verify_data=1 ("connection rejected") frames. Per the DJI docs the remote must then drop
+     * the link; afterwards the camera has to approve this phone again.
+     */
+    @Volatile private var lateConnectionHandled = false
+
+    private fun onLateConnectionFrame(f: Frame) {
+        if (f.isResponse) return
+        val req = Commands.parseConnectionRequest(f.payload) ?: return
+        if (req.verifyMode != Commands.VERIFY_MODE_RESULT) return
+        if (req.verifyData == 0) {
+            // Camera (re)approved us: answer like at the end of the handshake.
+            scope.launch {
+                try {
+                    val (set, id) = Commands.CONNECTION
+                    writeFrame(Frame(CmdType.ACK_NO_RESPONSE, f.seq, set, id, Commands.connectionResponse(prefs.deviceId)), true, quiet = true)
+                } catch (_: Exception) {
+                }
+            }
+            return
+        }
+        if (lateConnectionHandled) return
+        lateConnectionHandled = true
+        AppLog.e(TAG, "camera revoked the connection (verify_data=${req.verifyData}); disconnecting as the DJI docs require")
+        _connection.value.address?.let { prefs.setPaired(it, false) }
+        scope.launch {
+            sessionJob?.cancel()
+            sessionJob = null
+            closeClient()
+            resetSessionState()
+            update {
+                it.copy(
+                    phase = Phase.FAILED, verifyCode = null,
+                    message = "Kamera zerwała połączenie — połącz ponownie i zaakceptuj na kamerze",
+                )
+            }
+            notice("Kamera odrzuciła połączenie. Połącz ponownie i potwierdź na ekranie kamery.", error = true)
         }
     }
 
@@ -616,15 +604,8 @@ class CameraController private constructor(private val context: Context) {
             haptics.recordChanged(s.isRecording)
             if (s.isRecording) _notice.value = null
         }
-        if (startAfterWakeUntil != 0L && s.powerMode != 3 && !falling) {
-            val valid = System.currentTimeMillis() < startAfterWakeUntil
-            startAfterWakeUntil = 0
-            _busy.value = false
-            if (valid && !s.isRecording) {
-                AppLog.i(TAG, "camera awake, starting the recording requested while asleep")
-                sendRecord(start = true)
-            }
-        }
+        val stoppedByApp = _busy.value || System.currentTimeMillis() - lastRecordCommandAt < 5000
+        alerts.onStatus(prev, s, stoppedByApp)?.let { notice(it, error = true) }
         val key = "mode=${Commands.modeName(s.cameraMode)} status=${s.statusName} bat=${s.batteryPercent}% " +
             "power=${s.powerMode} temp=${s.tempOver} user=${s.userMode} res=${CameraStatus.resolutionName(s.videoResolution)} " +
             "fps=${CameraStatus.fpsName(s.fpsIdx)} eis=${s.eisMode} next=${s.modeNextFlag}"
@@ -645,6 +626,7 @@ class CameraController private constructor(private val context: Context) {
 
     private fun onLinkLost(status: Int) {
         AppLog.w(TAG, "BLE link lost, status=$status")
+        if (_status.value?.isRecording == true) alerts.onLinkLostWhileRecording()
         handshakeFrames.close(IOException("link lost"))
         failPending()
     }
@@ -667,8 +649,8 @@ class CameraController private constructor(private val context: Context) {
         failPending()
         _status.value = null
         _modeName.value = null
-        // A wake-then-record survives the reconnect that waking the camera causes.
-        _busy.value = startAfterWakeUntil > System.currentTimeMillis()
+        _busy.value = false
+        lateConnectionHandled = false
         lastStatusKey = null
     }
 }

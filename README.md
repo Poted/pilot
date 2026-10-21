@@ -23,12 +23,17 @@ więc kolejne wersje instalują się „na” poprzednią bez utraty parowania.
 5. Ekran **Log** → *Kopiuj* / *Udostępnij*. Przełącznik „Pełny log RX” dodaje każdą ramkę statusu (2 Hz).
    Log jest też zapisywany do `files/logs/pilot.log` w danych aplikacji.
 
-## GPS i kafelek
+## GPS, kafelek, widżet, alerty
 
 - **GPS z telefonu** (przełącznik na ekranie głównym): co sekundę wysyła pozycję, prędkość i wysokość
   do kamery komendą `0017`, tak jak odbiornik GPS w demo DJI. Nic nie jest wysyłane do uśpionej kamery.
 - **Kafelek „Nagrywanie Osmo”** w szybkich ustawieniach: dodaj go przez edycję kafelków w panelu
   powiadomień. Dotknięcie przy połączonej kamerze uruchamia/zatrzymuje nagrywanie, bez połączenia otwiera aplikację.
+- **Widżet** (1×1) na ekranie głównym: jeden przycisk start/stop, pod nim czas nagrania.
+- **Alerty** (powiadomienie z wibracją): bateria kamery ≤15% i ≤5%, ≤10 i ≤2 min nagrania na karcie,
+  temperatura, nagrywanie zatrzymane nie z aplikacji, utrata połączenia w trakcie nagrywania.
+- **Uśpienie**: aplikacja pokazuje, że kamera śpi, i nic do niej nie wysyła. Wybudzanie reklamą BLE
+  (jak w demo ESP32) z Androida nie działa na Action 6, więc zostało usunięte — kamerę budzi się jej przyciskiem.
 
 ## Architektura
 
@@ -38,7 +43,9 @@ więc kolejne wersje instalują się „na” poprzednią bez utraty parowania.
 | `protocol/Frame.kt` | `protocol/dji_protocol_parser.c` + składanie ramek z notyfikacji |
 | `protocol/Commands.kt` | `dji_protocol_data_descriptors.c`, struktury z `docs/protocol_data_segment.md` |
 | `ble/GattClient.kt` | `ble/ble.c` (serwis FFF0, notify FFF4, write FFF5, MTU 512) |
-| `ble/Scanner.kt` | filtr reklam DJI (`bsp_link_is_dji_camera_adv`), wybudzanie reklamą `WKP` |
+| `ble/Scanner.kt` | filtr reklam DJI (`bsp_link_is_dji_camera_adv`) |
+| `ble/Alerts.kt` | alerty o baterii, karcie, temperaturze, zatrzymanym nagrywaniu |
+| `service/RecordWidget.kt` | widżet start/stop |
 | `ble/CameraController.kt` | `connect_logic.c`, `command_logic.c`, `status_logic.c` |
 | `service/CameraService.kt` | foreground service (`connectedDevice` + `location`) + powiadomienie z przyciskiem |
 | `service/RecordTileService.kt` | kafelek szybkich ustawień |

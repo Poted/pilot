@@ -84,7 +84,7 @@ class RecordTileService : TileService() {
         val (state, subtitle) = when {
             c.phase != Phase.CONNECTED -> Tile.STATE_INACTIVE to c.phase.label
             controller.busy.value -> Tile.STATE_ACTIVE to "…"
-            controller.asleep.value -> Tile.STATE_INACTIVE to "Uśpiona — dotknij"
+            controller.asleep.value -> Tile.STATE_UNAVAILABLE to "Uśpiona"
             recording -> Tile.STATE_ACTIVE to "REC ${formatDuration(st?.recordTimeSec?.toLong())}"
             else -> Tile.STATE_INACTIVE to "Gotowa — dotknij"
         }

@@ -186,6 +186,7 @@ class CameraService : Service() {
             )
         ) { it.toList() }.distinctUntilChanged().onEach {
             RecordTileService.refresh(this)
+            RecordWidget.update(this)
             val phase = controller.connection.value.phase
             if (phase == Phase.IDLE || phase == Phase.FAILED) {
                 stopSelfCleanly()
@@ -212,13 +213,13 @@ class CameraService : Service() {
         val name = c.name ?: "Osmo"
 
         val title = when {
-            c.phase == Phase.CONNECTED && asleep -> "$name — uśpiona"
+            c.phase == Phase.CONNECTED && asleep -> "$name — uśpiona (włącz przyciskiem)"
             c.phase == Phase.CONNECTED && recording -> "● REC ${formatDuration(st?.recordTimeSec?.toLong())} — $name"
             c.phase == Phase.CONNECTED -> "$name — gotowa"
             c.phase == Phase.WAITING_APPROVAL -> "$name — potwierdź na kamerze (kod ${c.verifyCode})"
             else -> "$name — ${c.phase.label}"
         }
-        val notice = controller.notice.value?.takeIf { System.currentTimeMillis() - it.at < 30_000 }
+        val notice = controller.notice.value?.takeIf { System.currentTimeMillis() - it.at < 10_000 }
         val text = if (notice != null) {
             notice.text
         } else if (st != null) {
@@ -259,10 +260,9 @@ class CameraService : Service() {
             .setColor(if (recording) 0xFFD32F2F.toInt() else 0xFF455A64.toInt())
             .setColorized(recording)
 
-        if (c.phase == Phase.CONNECTED || controller.busy.value) {
+        if (c.phase == Phase.CONNECTED && !asleep) {
             val label = when {
                 controller.busy.value -> "…"
-                asleep -> "● START (wybudź)"
                 recording -> "■ STOP"
                 else -> "● START"
             }
@@ -292,6 +292,7 @@ class CameraService : Service() {
 
     override fun onDestroy() {
         AppLog.i(TAG, "service destroyed")
+        RecordWidget.update(this, force = true)
         controller.gps.stop()
         scope?.cancel()
         scope = null

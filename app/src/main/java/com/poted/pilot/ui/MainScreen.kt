@@ -85,17 +85,18 @@ fun MainScreen(onShowLog: () -> Unit) {
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
-            delay(1000)
+            delay(500)
         }
     }
-    val visibleNotice = notice?.takeIf { now - it.at < 15_000 }
+    // Errors stay 6 s, hints 4 s; tapping the banner closes it.
+    val visibleNotice = notice?.takeIf { now - it.at < if (it.error) 6_000 else 4_000 }
 
     Column(Modifier.fillMaxSize()) {
         Header(conn, asleep, onShowLog)
         Column(
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
         ) {
-            visibleNotice?.let { NoticeBanner(it.text, it.error) }
+            visibleNotice?.let { NoticeBanner(it.text, it.error) { controller.dismissNotice() } }
             if (connected) {
                 status?.let { st ->
                     ParameterTiles(st, modeName, asleep)
@@ -150,11 +151,12 @@ private fun Header(conn: Connection, asleep: Boolean, onShowLog: () -> Unit) {
 }
 
 @Composable
-private fun NoticeBanner(text: String, error: Boolean) {
+private fun NoticeBanner(text: String, error: Boolean, onDismiss: () -> Unit) {
     val color = if (error) Palette.Rec else Palette.Accent
     Box(
         Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(Card)
             .background(color.copy(alpha = 0.15f)).border(1.dp, color.copy(alpha = 0.5f), Card)
+            .clickable(onClick = onDismiss)
             .padding(12.dp),
     ) {
         Text(text, color = Palette.Text, fontSize = 14.sp)
@@ -303,11 +305,7 @@ private fun ModeSelector(st: CameraStatus, asleep: Boolean, controller: CameraCo
     Spacer(Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         SecondaryButton("QS", Modifier.weight(1f), enabled = !asleep && !st.isRecording) { controller.quickSwitch() }
-        if (asleep) {
-            SecondaryButton("Wybudź", Modifier.weight(1f)) { controller.wake() }
-        } else {
-            SecondaryButton("Uśpij", Modifier.weight(1f), enabled = !st.isRecording) { controller.sleep() }
-        }
+        SecondaryButton("Uśpij", Modifier.weight(1f), enabled = !asleep && !st.isRecording) { controller.sleep() }
     }
 }
 
@@ -413,7 +411,6 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
                 if (scanning) controller.scanner.stop() else controller.scanner.start()
             } else activity.requestPermissions()
         }
-        if (last != null) SecondaryButton("Wybudź", Modifier.weight(1f)) { controller.wake() }
     }
 
     if (scanning || devices.isNotEmpty()) {
@@ -486,7 +483,7 @@ private fun Footer(conn: Connection, controller: CameraController) {
 @Composable
 private fun RecordBar(connected: Boolean, st: CameraStatus?, asleep: Boolean, busy: Boolean, onClick: () -> Unit) {
     val recording = st?.isRecording == true
-    val enabled = connected && !busy
+    val enabled = connected && !busy && !asleep
     val ring = when {
         !connected -> Palette.Outline
         asleep -> Palette.Sleep
@@ -494,10 +491,9 @@ private fun RecordBar(connected: Boolean, st: CameraStatus?, asleep: Boolean, bu
         else -> Palette.Text
     }
     val caption = when {
-        busy && asleep -> "Wybudzam kamerę…"
         busy -> "Czekam na kamerę…"
         !connected -> "Brak połączenia"
-        asleep -> "Uśpiona — dotknij, aby wybudzić i nagrywać"
+        asleep -> "Uśpiona — włącz kamerę jej przyciskiem"
         recording -> "Nagrywanie"
         st?.cameraMode == 0x05 -> "Zrób zdjęcie"
         else -> "Gotowa"

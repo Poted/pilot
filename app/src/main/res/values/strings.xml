@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">Osmo Pilot</string>
     <string name="tile_label">Nagrywanie Osmo</string>
+    <string name="widget_description">Jeden przycisk: start/stop nagrywania</string>
 </resources>
