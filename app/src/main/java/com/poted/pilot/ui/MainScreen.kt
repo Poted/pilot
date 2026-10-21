@@ -63,6 +63,7 @@ import com.poted.pilot.ble.Phase
 import com.poted.pilot.protocol.CameraStatus
 import com.poted.pilot.protocol.Commands
 import com.poted.pilot.service.CameraService
+import com.poted.pilot.service.Mimo
 import kotlinx.coroutines.delay
 
 private val Card = RoundedCornerShape(16.dp)
@@ -458,9 +459,15 @@ private fun Footer(conn: Connection, controller: CameraController) {
     val ctx = LocalContext.current
     val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (conn.phase == Phase.CONNECTED) {
-            TextButton(onClick = { CameraService.disconnect(ctx) }) { Text("Rozłącz", color = Palette.Label) }
+        val idle = conn.phase == Phase.IDLE || conn.phase == Phase.FAILED
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // The camera accepts one controller at a time: hand it over to Mimo in one tap.
+            SecondaryButton(if (idle) "Otwórz Mimo" else "Przekaż do Mimo", Modifier.weight(1f)) { Mimo.handOff(ctx) }
+            if (conn.phase == Phase.CONNECTED) {
+                SecondaryButton("Rozłącz", Modifier.weight(1f)) { CameraService.disconnect(ctx) }
+            }
         }
+        Spacer(Modifier.height(8.dp))
         if (!pm.isIgnoringBatteryOptimizations(ctx.packageName)) {
             TextButton(onClick = {
                 ctx.startActivity(

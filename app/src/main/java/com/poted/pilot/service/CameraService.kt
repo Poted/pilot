@@ -186,7 +186,7 @@ class CameraService : Service() {
             )
         ) { it.toList() }.distinctUntilChanged().onEach {
             RecordTileService.refresh(this)
-            RecordWidget.update(this)
+            Widgets.update(this)
             val phase = controller.connection.value.phase
             if (phase == Phase.IDLE || phase == Phase.FAILED) {
                 stopSelfCleanly()
@@ -268,6 +268,11 @@ class CameraService : Service() {
             }
             b.addAction(0, label, toggle)
         }
+        val mimo = PendingIntent.getActivity(
+            this, 3, Intent(this, MimoHandoffActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        b.addAction(0, "Mimo", mimo)
         b.addAction(0, "Rozłącz", disconnect)
         return b.build()
     }
@@ -292,7 +297,7 @@ class CameraService : Service() {
 
     override fun onDestroy() {
         AppLog.i(TAG, "service destroyed")
-        RecordWidget.update(this, force = true)
+        Widgets.update(this, force = true)
         controller.gps.stop()
         scope?.cancel()
         scope = null

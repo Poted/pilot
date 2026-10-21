@@ -25,6 +25,14 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Lets the app find DJI Mimo among installed launcher apps (Android 11+ package visibility). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".PilotApp"
         android:allowBackup="false"
@@ -43,6 +51,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".service.MimoHandoffActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".service.CameraService"
             android:exported="false"
@@ -58,6 +74,18 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/record_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".service.PanelWidget"
+            android:exported="true"
+            android:label="@string/panel_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/panel_widget_info" />
         </receiver>
 
         <service

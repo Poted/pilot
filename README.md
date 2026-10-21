@@ -29,7 +29,9 @@ więc kolejne wersje instalują się „na” poprzednią bez utraty parowania.
   do kamery komendą `0017`, tak jak odbiornik GPS w demo DJI. Nic nie jest wysyłane do uśpionej kamery.
 - **Kafelek „Nagrywanie Osmo”** w szybkich ustawieniach: dodaj go przez edycję kafelków w panelu
   powiadomień. Dotknięcie przy połączonej kamerze uruchamia/zatrzymuje nagrywanie, bez połączenia otwiera aplikację.
-- **Widżet** (1×1) na ekranie głównym: jeden przycisk start/stop, pod nim czas nagrania.
+- **Widżety**: 1×1 (jeden przycisk start/stop) oraz panel 4×1 (nagrywanie, Połącz/Rozłącz, Mimo, aplikacja).
+- **Przekaż do Mimo** (aplikacja, powiadomienie, panel): kamera przyjmuje tylko jednego pilota naraz, więc
+  przycisk rozłącza Osmo Pilot i otwiera DJI Mimo (Mimo samo łączy się z ostatnią kamerą).
 - **Alerty** (powiadomienie z wibracją): bateria kamery ≤15% i ≤5%, ≤10 i ≤2 min nagrania na karcie,
   temperatura, nagrywanie zatrzymane nie z aplikacji, utrata połączenia w trakcie nagrywania.
 - **Uśpienie**: aplikacja pokazuje, że kamera śpi, i nic do niej nie wysyła. Wybudzanie reklamą BLE
@@ -45,7 +47,8 @@ więc kolejne wersje instalują się „na” poprzednią bez utraty parowania.
 | `ble/GattClient.kt` | `ble/ble.c` (serwis FFF0, notify FFF4, write FFF5, MTU 512) |
 | `ble/Scanner.kt` | filtr reklam DJI (`bsp_link_is_dji_camera_adv`) |
 | `ble/Alerts.kt` | alerty o baterii, karcie, temperaturze, zatrzymanym nagrywaniu |
-| `service/RecordWidget.kt` | widżet start/stop |
+| `service/RecordWidget.kt` | widżety (1×1 start/stop, panel 4×1) |
+| `service/MimoHandoff.kt` | przekazanie kamery do DJI Mimo |
 | `ble/CameraController.kt` | `connect_logic.c`, `command_logic.c`, `status_logic.c` |
 | `service/CameraService.kt` | foreground service (`connectedDevice` + `location`) + powiadomienie z przyciskiem |
 | `service/RecordTileService.kt` | kafelek szybkich ustawień |
