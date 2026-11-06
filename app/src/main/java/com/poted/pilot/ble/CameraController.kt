@@ -6,6 +6,7 @@ import android.content.Context
 import com.poted.pilot.gps.GpsFeeder
 import com.poted.pilot.log.AppLog
 import com.poted.pilot.log.RateLimiter
+import com.poted.pilot.schedule.Scheduler
 import com.poted.pilot.protocol.CameraStatus
 import com.poted.pilot.protocol.CmdType
 import com.poted.pilot.protocol.Commands
@@ -305,7 +306,92 @@ class CameraController private constructor(private val context: Context) {
         if (_asleep.value == value) return
         _asleep.value = value
         AppLog.i(TAG, if (value) "camera asleep ($why)" else "camera awake ($why)")
+        val sch = Scheduler.schedule.value
+        if (value && sch.enabled) alerts.scheduleAtRisk(Scheduler.format(sch.startAt))
     }
+
+    // ---------------------------------------------------------------- scheduled recording
+
+    /** Sends START/STOP and waits until a status push confirms it. */
+    private suspend fun recordAndConfirm(start: Boolean): Boolean {
+        repeat(2) { attempt ->
+            lastRecordCommandAt = System.currentTimeMillis()
+            val (set, id) = Commands.RECORD
+            val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.recordControl(start), timeoutMs = 3000)
+            AppLog.i(TAG, "scheduled ${if (start) "START" else "STOP"} #${attempt + 1}: ret=${r?.let { Commands.retCode(it.payload) } ?: "no response"}")
+            val ok = withTimeoutOrNull(6000) {
+                while (_status.value?.isRecording != start) delay(200)
+                true
+            } ?: false
+            lastRecordCommandAt = System.currentTimeMillis()
+            if (ok) return true
+        }
+        return false
+    }
+
+    /**
+     * Scheduled start: connect if needed (up to 2 min), refuse a sleeping camera, optionally
+     * switch to a standard mode, then record. [done] gets the outcome for the notification.
+     */
+    fun runScheduledStart(mode: Int?, done: (ok: Boolean, text: String) -> Unit) {
+        scope.launch {
+            AppLog.i(TAG, "scheduled start, mode=${mode?.let { Commands.modeName(it) } ?: "unchanged"}")
+            val phase = _connection.value.phase
+            if (phase == Phase.IDLE || phase == Phase.FAILED) {
+                val addr = prefs.lastAddress
+                if (addr == null) {
+                    done(false, "Brak zapamiętanej kamery")
+                    return@launch
+                }
+                connect(addr, prefs.lastName)
+            }
+            val ready = withTimeoutOrNull(120_000) {
+                while (!(isConnected && _status.value != null)) delay(500)
+                true
+            } ?: false
+            if (!ready) {
+                done(false, "Nie udało się połączyć z kamerą (wyłączona albo poza zasięgiem)")
+                return@launch
+            }
+            if (_asleep.value || _status.value?.powerMode == 3) {
+                // Android cannot send the wake-up advertisement the camera accepts (it wants a
+                // public BLE address, see dji-sdk/Osmo-GPS-Controller-Demo#24).
+                done(false, "Kamera była uśpiona — z telefonu nie da się jej wybudzić. Zostaw ją w standby (bez auto-wyłączania).")
+                return@launch
+            }
+            var warning = ""
+            if (mode != null && _status.value?.cameraMode != mode) {
+                val (set, id) = Commands.MODE_SWITCH
+                sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.modeSwitch(mode))
+                val switched = withTimeoutOrNull(6000) {
+                    while (_status.value?.cameraMode != mode) delay(200)
+                    true
+                } ?: false
+                if (!switched) warning = " (nie udało się przełączyć na ${Commands.modeName(mode)})"
+                delay(1500) // let the camera settle in the new mode
+            }
+            if (_status.value?.isRecording == true) {
+                done(true, "Kamera już nagrywała$warning")
+                return@launch
+            }
+            val ok = recordAndConfirm(start = true)
+            val name = _modeName.value?.name?.takeIf { it.isNotBlank() } ?: Commands.modeName(_status.value?.cameraMode ?: -1)
+            done(ok, if (ok) "Nagrywanie wystartowało ($name)$warning" else "Kamera nie zaczęła nagrywać$warning")
+        }
+    }
+
+    fun runScheduledStop(done: (ok: Boolean, text: String) -> Unit) {
+        scope.launch {
+            if (!isConnected || _status.value?.isRecording != true) {
+                done(true, "Nagrywanie nie trwało")
+                return@launch
+            }
+            val ok = recordAndConfirm(start = false)
+            done(ok, if (ok) "Nagrywanie zatrzymane zgodnie z planem" else "Nie udało się zatrzymać nagrywania")
+        }
+    }
+
+    fun notifySchedule(ok: Boolean, text: String) = alerts.scheduleResult(ok, text)
 
     /** Status pushes arrive at ~2 Hz; silence for several seconds means the camera went to sleep. */
     private fun startWatchdog() {
