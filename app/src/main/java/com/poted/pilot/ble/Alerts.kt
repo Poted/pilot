@@ -28,6 +28,8 @@ class Alerts(private val context: Context) {
         private const val ID_TEMP = 102
         private const val ID_STOPPED = 103
         private const val ID_LINK = 104
+        private const val ID_SCHEDULE = 105
+        private const val QUIET_CHANNEL_ID = "schedule_info"
 
         private val BATTERY_LEVELS = listOf(15, 5)
         private val REMAIN_LEVELS_SEC = listOf(600L, 120L)
@@ -46,6 +48,13 @@ class Alerts(private val context: Context) {
                     description = "Bateria, miejsce na karcie, temperatura, zatrzymane nagrywanie"
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 300, 150, 300, 150, 300)
+                }
+            )
+        }
+        if (nm.getNotificationChannel(QUIET_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(QUIET_CHANNEL_ID, "Zaplanowane nagrywanie", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Potwierdzenia zaplanowanego startu i stopu"
                 }
             )
         }
@@ -105,6 +114,21 @@ class Alerts(private val context: Context) {
         return banner
     }
 
+    fun scheduleAtRisk(at: String) {
+        post(
+            ID_SCHEDULE, "Kamera zasnęła",
+            "Zaplanowane nagrywanie ($at) się nie uda, dopóki jej nie włączysz. " +
+                "Z telefonu nie da się jej wybudzić — wyłącz w kamerze automatyczne wyłączanie.",
+            channel = QUIET_CHANNEL_ID,
+        )
+    }
+
+    /** Success goes to a quiet channel (it may fire at dawn); failure is a loud alert. */
+    fun scheduleResult(ok: Boolean, text: String) {
+        if (ok) post(ID_SCHEDULE, "Zaplanowane nagrywanie", text, channel = QUIET_CHANNEL_ID)
+        else post(ID_SCHEDULE, "Zaplanowane nagrywanie nie powiodło się", text)
+    }
+
     fun onLinkLostWhileRecording() {
         post(
             ID_LINK, "Utracono połączenie z kamerą",
@@ -112,13 +136,13 @@ class Alerts(private val context: Context) {
         )
     }
 
-    private fun post(id: Int, title: String, text: String) {
+    private fun post(id: Int, title: String, text: String, channel: String = CHANNEL_ID) {
         AppLog.w(TAG, "$title: $text")
         val open = PendingIntent.getActivity(
             context, 10, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val n = NotificationCompat.Builder(context, CHANNEL_ID)
+        val n = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)

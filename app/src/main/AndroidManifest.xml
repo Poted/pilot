@@ -23,6 +23,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Scheduled recording: exact alarms (setAlarmClock) and re-arming after a reboot. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Lets the app find DJI Mimo among installed launcher apps (Android 11+ package visibility). -->
@@ -63,6 +67,14 @@
             android:name=".service.CameraService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|location" />
+
+        <receiver
+            android:name=".schedule.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".service.RecordWidget"

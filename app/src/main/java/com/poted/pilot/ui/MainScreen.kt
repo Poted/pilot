@@ -3,9 +3,7 @@ package com.poted.pilot.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.Uri
-import android.os.BatteryManager
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
@@ -30,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -41,7 +41,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +63,7 @@ import com.poted.pilot.protocol.CameraStatus
 import com.poted.pilot.protocol.Commands
 import com.poted.pilot.service.CameraService
 import com.poted.pilot.service.Mimo
+import com.poted.pilot.schedule.Scheduler
 import kotlinx.coroutines.delay
 
 private val Card = RoundedCornerShape(16.dp)
@@ -112,6 +112,8 @@ fun MainScreen(onShowLog: () -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
             GpsPanel(controller)
+            Spacer(Modifier.height(8.dp))
+            SchedulePanel()
             Spacer(Modifier.height(8.dp))
             Footer(conn, controller)
         }
@@ -168,14 +170,6 @@ private fun NoticeBanner(text: String, error: Boolean, onDismiss: () -> Unit) {
 
 @Composable
 private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, asleep: Boolean) {
-    val ctx = LocalContext.current
-    var phoneBattery by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            phoneBattery = readPhoneBattery(ctx)
-            delay(30_000)
-        }
-    }
     val photoMode = st.cameraMode == 0x05
     val mode = modeName?.name?.takeIf { it.isNotBlank() } ?: Commands.modeName(st.cameraMode)
     val params = modeName?.param?.takeIf { it.isNotBlank() }
@@ -200,7 +194,6 @@ private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, aslee
                 "Bateria kamery", bat?.let { "$it%" } ?: "—", Modifier.weight(1f),
                 valueColor = if (bat != null && bat <= 15) Palette.Rec else Palette.Text,
             )
-            Tile("Bateria telefonu", if (phoneBattery >= 0) "$phoneBattery%" else "—", Modifier.weight(1f))
             Tile("Proporcje", CameraStatus.ratioName(st.photoRatio) ?: "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -272,13 +265,6 @@ private fun resolutionLabel(st: CameraStatus, params: String?): String {
     if (known != null && !known.startsWith("#")) return known
     val fromParams = params?.let { Regex("""^(\d+(?:\.\d+)?K|\d{3,4}[pP])""").find(it)?.value }
     return fromParams ?: known ?: "—"
-}
-
-private fun readPhoneBattery(ctx: Context): Int {
-    val i = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return -1
-    val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-    val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-    return if (level < 0 || scale <= 0) -1 else level * 100 / scale
 }
 
 // ------------------------------------------------------------------ modes
@@ -362,6 +348,94 @@ private fun GpsPanel(controller: CameraController) {
             }
             Text(line, fontSize = 12.sp, color = if (loc != null) Palette.Ready else Palette.Warn,
                 modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
+// ------------------------------------------------------------------ schedule
+
+private val DURATIONS = listOf(0, 15, 30, 60, 120, 180, 300)
+
+private fun durationLabel(min: Int) = when {
+    min == 0 -> "bez limitu"
+    min < 60 -> "$min min"
+    else -> "${min / 60} h"
+}
+
+@Composable
+private fun SchedulePanel() {
+    val ctx = LocalContext.current
+    val sch by Scheduler.schedule.collectAsState()
+    var modeMenu by remember { mutableStateOf(false) }
+    var durationMenu by remember { mutableStateOf(false) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(30_000)
+        }
+    }
+
+    fun update(s: com.poted.pilot.schedule.Schedule) = Scheduler.set(ctx, s)
+
+    Column(Modifier.fillMaxWidth().clip(Card).background(Palette.Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Zaplanowane nagrywanie", color = Palette.Text, fontWeight = FontWeight.SemiBold)
+                Text("Jednorazowo, np. timelapse przed wschodem", fontSize = 12.sp, color = Palette.Label)
+            }
+            Switch(checked = sch.enabled, onCheckedChange = { update(sch.copy(enabled = it)) })
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton("%02d:%02d".format(sch.hour, sch.minute), Modifier.weight(1f)) {
+                android.app.TimePickerDialog(ctx, { _, h, m ->
+                    update(sch.copy(hour = h, minute = m, enabled = true))
+                }, sch.hour, sch.minute, true).show()
+            }
+            Box(Modifier.weight(1.4f)) {
+                SecondaryButton(sch.mode?.let { Commands.modeName(it) } ?: "Tryb z kamery", Modifier.fillMaxWidth()) {
+                    modeMenu = true
+                }
+                DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Tryb ustawiony na kamerze (też własny)") },
+                        onClick = { modeMenu = false; update(sch.copy(mode = null)) },
+                    )
+                    Commands.switchableModes.forEach { m ->
+                        DropdownMenuItem(
+                            text = { Text(Commands.modeName(m)) },
+                            onClick = { modeMenu = false; update(sch.copy(mode = m)) },
+                        )
+                    }
+                }
+            }
+            Box(Modifier.weight(1f)) {
+                SecondaryButton(durationLabel(sch.durationMin), Modifier.fillMaxWidth()) { durationMenu = true }
+                DropdownMenu(expanded = durationMenu, onDismissRequest = { durationMenu = false }) {
+                    DURATIONS.forEach { d ->
+                        DropdownMenuItem(
+                            text = { Text(if (d == 0) "Bez limitu (zatrzymasz sam)" else "Zatrzymaj po ${durationLabel(d)}") },
+                            onClick = { durationMenu = false; update(sch.copy(durationMin = d)) },
+                        )
+                    }
+                }
+            }
+        }
+        val line = if (sch.enabled && sch.startAt > 0) {
+            val left = ((sch.startAt - now) / 60_000).coerceAtLeast(0)
+            "Start: ${Scheduler.format(sch.startAt)} (za ${left / 60} h ${left % 60} min)"
+        } else {
+            "Wyłączone"
+        }
+        Text(line, fontSize = 12.sp, color = if (sch.enabled) Palette.Ready else Palette.Label,
+            modifier = Modifier.padding(top = 6.dp))
+        if (sch.enabled) {
+            Text(
+                "Kamera musi zostać włączona (standby): wyłącz w niej automatyczne wyłączanie, najlepiej " +
+                    "podłącz zasilanie. Uśpionej kamery telefon nie obudzi. 5 min przed startem aplikacja sama się połączy.",
+                fontSize = 12.sp, color = Palette.Label, modifier = Modifier.padding(top = 2.dp),
+            )
         }
     }
 }

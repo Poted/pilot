@@ -18,6 +18,7 @@ import com.poted.pilot.R
 import com.poted.pilot.ble.CameraController
 import com.poted.pilot.ble.Phase
 import com.poted.pilot.log.AppLog
+import com.poted.pilot.schedule.Scheduler
 import com.poted.pilot.ui.MainActivity
 import com.poted.pilot.ui.formatDuration
 import com.poted.pilot.ui.formatFree
@@ -44,6 +45,9 @@ class CameraService : Service() {
         const val ACTION_TOGGLE_RECORD = "com.poted.pilot.TOGGLE_RECORD"
         const val ACTION_DISCONNECT = "com.poted.pilot.DISCONNECT"
         const val ACTION_SET_GPS = "com.poted.pilot.SET_GPS"
+        const val ACTION_SCHEDULE_PREP = "com.poted.pilot.SCHEDULE_PREP"
+        const val ACTION_SCHEDULE_START = "com.poted.pilot.SCHEDULE_START"
+        const val ACTION_SCHEDULE_STOP = "com.poted.pilot.SCHEDULE_STOP"
         const val EXTRA_ENABLED = "enabled"
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_NAME = "name"
@@ -107,6 +111,29 @@ class CameraService : Service() {
                 controller.toggleRecord()
             }
             ACTION_SET_GPS -> applyGps()
+            ACTION_SCHEDULE_PREP -> {
+                // A few minutes ahead: get connected so the start itself is quick.
+                AppLog.i(TAG, "schedule: preparing (phase=${controller.connection.value.phase})")
+                val phase = controller.connection.value.phase
+                val addr = controller.prefs.lastAddress
+                if ((phase == Phase.IDLE || phase == Phase.FAILED) && addr != null) {
+                    controller.connect(addr, controller.prefs.lastName)
+                }
+            }
+            ACTION_SCHEDULE_START -> {
+                Scheduler.init(this)
+                val sch = Scheduler.schedule.value
+                Scheduler.consumed(this)
+                AppLog.i(TAG, "schedule: start alarm fired")
+                controller.runScheduledStart(sch.mode) { ok, text ->
+                    controller.notifySchedule(ok, text)
+                    if (ok && sch.durationMin > 0) Scheduler.armStop(this, sch.durationMin)
+                }
+            }
+            ACTION_SCHEDULE_STOP -> {
+                AppLog.i(TAG, "schedule: stop alarm fired")
+                controller.runScheduledStop { ok, text -> controller.notifySchedule(ok, text) }
+            }
             ACTION_DISCONNECT -> {
                 AppLog.i(TAG, "disconnect from notification")
                 controller.disconnect()
@@ -227,6 +254,7 @@ class CameraService : Service() {
             st.batteryPercent?.let { parts += "Bateria $it%" }
             st.remainTimeSec?.let { parts += "zostało ${formatDuration(it)}" }
             st.remainCapacityMb?.let { parts += formatFree(it) }
+            Scheduler.schedule.value.takeIf { it.enabled }?.let { parts += "start ${Scheduler.format(it.startAt)}" }
             parts.joinToString(" · ")
         } else {
             c.message ?: ""
