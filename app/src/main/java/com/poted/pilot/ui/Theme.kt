@@ -30,19 +30,18 @@ data class AppColors(
     val sleep: Color,
 )
 
-/** Anthracite rather than pure black: easier on the eyes and still dark outdoors at night. */
 private val DarkColors = AppColors(
-    background = Color(0xFF1E2024),
-    surface = Color(0xFF282B31),
-    surfaceHigh = Color(0xFF32363D),
-    outline = Color(0xFF41464F),
-    label = Color(0xFF9DA4B0),
-    text = Color(0xFFECEEF2),
-    accent = Color(0xFF7AB0FF),
+    background = Color(0xFF0D0E11),
+    surface = Color(0xFF17191E),
+    surfaceHigh = Color(0xFF22252C),
+    outline = Color(0xFF2E323A),
+    label = Color(0xFF8B93A1),
+    text = Color(0xFFE9ECF1),
+    accent = Color(0xFF6EA8FE),
     rec = Color(0xFFE5484D),
     ready = Color(0xFF3DD68C),
     warn = Color(0xFFF5A524),
-    sleep = Color(0xFF7480FF),
+    sleep = Color(0xFF5B6CFF),
 )
 
 private val LightColors = AppColors(

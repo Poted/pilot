@@ -200,11 +200,10 @@ private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, aslee
             Tile("Aspect ratio", CameraStatus.ratioName(st.photoRatio) ?: "—", Modifier.weight(1f))
             Tile("Photos left", st.remainPhotoNum?.toString() ?: "—", Modifier.weight(1f))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Tile("Free on card", formatSize(st.remainCapacityMb), Modifier.weight(1f))
-            Tile("Video left", formatDuration(st.remainTimeSec), Modifier.weight(1f))
-        }
-        val extra = buildList {
+        // Storage plus the mode-dependent tiles share one balanced grid (see balancedRows).
+        val flex = buildList {
+            add(Triple("Free on card", formatSize(st.remainCapacityMb), Palette.Text))
+            add(Triple("Video left", formatDuration(st.remainTimeSec), Palette.Text))
             when (st.tempOver) {
                 1 -> add(Triple("Temperature", "high", Palette.Warn))
                 2 -> add(Triple("Temperature", "too hot to record", Palette.Rec))
@@ -221,11 +220,12 @@ private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, aslee
             if ((st.userMode ?: 0) in 1..5) add(Triple("Custom mode", "C${st.userMode}", Palette.Text))
             if (asleep) add(Triple("Power", "asleep", Palette.Sleep))
         }
-        extra.chunked(3).forEach { row ->
+        var start = 0
+        balancedRows(flex.size).forEach { n ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { (l, v, c) -> Tile(l, v, Modifier.weight(1f), valueColor = c) }
-                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                flex.subList(start, start + n).forEach { (l, v, c) -> Tile(l, v, Modifier.weight(1f), valueColor = c) }
             }
+            start += n
         }
     }
 }
@@ -252,6 +252,18 @@ private fun Tile(
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/**
+ * Row sizes for [n] tiles, at most 3 per row, so the grid never ends with a lone tile:
+ * 4 -> 2+2, 5 -> 3+2, 7 -> 3+2+2. Tiles in a row share its full width.
+ */
+internal fun balancedRows(n: Int): List<Int> = when {
+    n <= 3 -> if (n == 0) emptyList() else listOf(n)
+    n == 4 -> listOf(2, 2)
+    n % 3 == 0 -> List(n / 3) { 3 }
+    n % 3 == 2 -> List(n / 3) { 3 } + 2
+    else -> List(n / 3 - 1) { 3 } + listOf(2, 2)
 }
 
 /** Resolution code, falling back to the 1D06 string ("4K30 HB" -> "4K") for codes the docs don't list. */
