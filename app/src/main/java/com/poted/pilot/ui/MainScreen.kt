@@ -3,9 +3,7 @@ package com.poted.pilot.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.Uri
-import android.os.BatteryManager
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
@@ -43,7 +41,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -173,14 +170,6 @@ private fun NoticeBanner(text: String, error: Boolean, onDismiss: () -> Unit) {
 
 @Composable
 private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, asleep: Boolean) {
-    val ctx = LocalContext.current
-    var phoneBattery by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            phoneBattery = readPhoneBattery(ctx)
-            delay(30_000)
-        }
-    }
     val photoMode = st.cameraMode == 0x05
     val mode = modeName?.name?.takeIf { it.isNotBlank() } ?: Commands.modeName(st.cameraMode)
     val params = modeName?.param?.takeIf { it.isNotBlank() }
@@ -205,7 +194,6 @@ private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, aslee
                 "Bateria kamery", bat?.let { "$it%" } ?: "—", Modifier.weight(1f),
                 valueColor = if (bat != null && bat <= 15) Palette.Rec else Palette.Text,
             )
-            Tile("Bateria telefonu", if (phoneBattery >= 0) "$phoneBattery%" else "—", Modifier.weight(1f))
             Tile("Proporcje", CameraStatus.ratioName(st.photoRatio) ?: "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -277,13 +265,6 @@ private fun resolutionLabel(st: CameraStatus, params: String?): String {
     if (known != null && !known.startsWith("#")) return known
     val fromParams = params?.let { Regex("""^(\d+(?:\.\d+)?K|\d{3,4}[pP])""").find(it)?.value }
     return fromParams ?: known ?: "—"
-}
-
-private fun readPhoneBattery(ctx: Context): Int {
-    val i = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return -1
-    val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-    val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-    return if (level < 0 || scale <= 0) -1 else level * 100 / scale
 }
 
 // ------------------------------------------------------------------ modes
