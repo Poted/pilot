@@ -46,11 +46,11 @@ object Widgets {
         val st = c.status.value
         return when {
             conn.phase != Phase.CONNECTED -> Look(R.drawable.widget_circle_off, "●", 0xFF8B93A1.toInt(), conn.phase.label)
-            c.asleep.value -> Look(R.drawable.widget_circle_sleep, "z", 0xFFFFFFFF.toInt(), "Uśpiona")
+            c.asleep.value -> Look(R.drawable.widget_circle_sleep, "z", 0xFFFFFFFF.toInt(), "Asleep")
             c.busy.value -> Look(R.drawable.widget_circle_ready, "…", 0xFFFFFFFF.toInt(), "…")
             st?.isRecording == true ->
                 Look(R.drawable.widget_circle_rec, "■", 0xFFFFFFFF.toInt(), formatDuration(st.recordTimeSec?.toLong()))
-            else -> Look(R.drawable.widget_circle_ready, "●", 0xFFE5484D.toInt(), "Gotowa")
+            else -> Look(R.drawable.widget_circle_ready, "●", 0xFFE5484D.toInt(), "Ready")
         }
     }
 
@@ -77,7 +77,7 @@ object Widgets {
     private fun small(context: Context, c: CameraController, look: Look) =
         RemoteViews(context.packageName, R.layout.widget_record).apply {
             setLook(look)
-            val shortLabel = if (look.label == "Gotowa") "Start" else look.label
+            val shortLabel = if (look.label == "Ready") "Start" else look.label
             setTextViewText(R.id.widget_label, shortLabel)
             setOnClickPendingIntent(R.id.widget_root, if (recordable(c)) toggle(context) else openApp(context))
         }
@@ -102,7 +102,7 @@ object Widgets {
             val phase = c.connection.value.phase
             val idle = phase == Phase.IDLE || phase == Phase.FAILED
             val address = c.prefs.lastAddress
-            setTextViewText(R.id.widget_connect, if (idle) "Połącz" else "Rozłącz")
+            setTextViewText(R.id.widget_connect, if (idle) "Connect" else "Disconnect")
             val connectIntent = when {
                 // A widget tap counts as user interaction, so starting the FGS from here is allowed.
                 idle && address != null -> PendingIntent.getForegroundService(

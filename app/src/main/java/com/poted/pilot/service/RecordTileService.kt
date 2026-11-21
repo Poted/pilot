@@ -84,12 +84,12 @@ class RecordTileService : TileService() {
         val (state, subtitle) = when {
             c.phase != Phase.CONNECTED -> Tile.STATE_INACTIVE to c.phase.label
             controller.busy.value -> Tile.STATE_ACTIVE to "…"
-            controller.asleep.value -> Tile.STATE_UNAVAILABLE to "Uśpiona"
+            controller.asleep.value -> Tile.STATE_UNAVAILABLE to "Asleep"
             recording -> Tile.STATE_ACTIVE to "REC ${formatDuration(st?.recordTimeSec?.toLong())}"
-            else -> Tile.STATE_INACTIVE to "Gotowa — dotknij"
+            else -> Tile.STATE_INACTIVE to "Ready — tap"
         }
         tile.state = state
-        tile.label = if (recording) "Stop nagrywania" else "Nagrywanie Osmo"
+        tile.label = if (recording) "Stop recording" else "Osmo record"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = subtitle
         tile.updateTile()
     }

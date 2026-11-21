@@ -23,14 +23,18 @@ więc kolejne wersje instalują się „na” poprzednią bez utraty parowania.
 5. Ekran **Log** → *Kopiuj* / *Udostępnij*. Przełącznik „Pełny log RX” dodaje każdą ramkę statusu (2 Hz).
    Log jest też zapisywany do `files/logs/pilot.log` w danych aplikacji.
 
+## Interfejs
+
+Aplikacja jest po angielsku. Motyw: Auto (jak telefon) / Light / Dark — przełącznik w nagłówku.
+
 ## GPS, kafelek, widżet, alerty
 
 - **GPS z telefonu** (przełącznik na ekranie głównym): co sekundę wysyła pozycję, prędkość i wysokość
   do kamery komendą `0017`, tak jak odbiornik GPS w demo DJI. Nic nie jest wysyłane do uśpionej kamery.
-- **Kafelek „Nagrywanie Osmo”** w szybkich ustawieniach: dodaj go przez edycję kafelków w panelu
+- **Kafelek „Osmo record”** w szybkich ustawieniach: dodaj go przez edycję kafelków w panelu
   powiadomień. Dotknięcie przy połączonej kamerze uruchamia/zatrzymuje nagrywanie, bez połączenia otwiera aplikację.
 - **Widżety**: 1×1 (jeden przycisk start/stop) oraz panel 4×1 (nagrywanie, Połącz/Rozłącz, Mimo, aplikacja).
-- **Przekaż do Mimo** (aplikacja, powiadomienie, panel): kamera przyjmuje tylko jednego pilota naraz, więc
+- **Mimo** (przycisk obok nagrywania, powiadomienie, panel): kamera przyjmuje tylko jednego pilota naraz, więc
   przycisk rozłącza Osmo Pilot i otwiera DJI Mimo (Mimo samo łączy się z ostatnią kamerą).
 - **Alerty** (powiadomienie z wibracją): bateria kamery ≤15% i ≤5%, ≤10 i ≤2 min nagrania na karcie,
   temperatura, nagrywanie zatrzymane nie z aplikacji, utrata połączenia w trakcie nagrywania.

@@ -11,46 +11,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import com.poted.pilot.log.AppLog
-
-/** Colours shared by the screens. The app is dark-only: it is mostly used outdoors next to a camera. */
-object Palette {
-    val Background = Color(0xFF0D0E11)
-    val Surface = Color(0xFF17191E)
-    val SurfaceHigh = Color(0xFF22252C)
-    val Outline = Color(0xFF2E323A)
-    val Label = Color(0xFF8B93A1)
-    val Text = Color(0xFFE9ECF1)
-    val Accent = Color(0xFF6EA8FE)
-    val Rec = Color(0xFFE5484D)
-    val Ready = Color(0xFF3DD68C)
-    val Warn = Color(0xFFF5A524)
-    val Sleep = Color(0xFF5B6CFF)
-}
-
-private val scheme = darkColorScheme(
-    primary = Palette.Accent,
-    onPrimary = Color(0xFF0B1A33),
-    secondary = Palette.Accent,
-    background = Palette.Background,
-    onBackground = Palette.Text,
-    surface = Palette.Surface,
-    onSurface = Palette.Text,
-    surfaceVariant = Palette.SurfaceHigh,
-    onSurfaceVariant = Palette.Label,
-    outline = Palette.Outline,
-    error = Palette.Rec,
-)
 
 class MainActivity : ComponentActivity() {
 
@@ -86,9 +55,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
+        ThemeSetting.load(this)
         requestPermissions()
         setContent {
-            MaterialTheme(colorScheme = scheme) {
+            val themeMode by ThemeSetting.mode.collectAsState()
+            PilotTheme(themeMode) {
                 Surface(Modifier.fillMaxSize(), color = Palette.Background) {
                     var screen by remember { mutableStateOf("main") }
                     Box(Modifier.safeDrawingPadding()) {

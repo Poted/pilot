@@ -201,10 +201,10 @@ data class CameraStatus(
 
     val statusName: String
         get() = when (cameraStatus) {
-            0x00 -> "ekran wyłączony"
-            0x01 -> "gotowa"
-            0x02 -> "odtwarzanie"
-            0x03 -> "nagrywa"
+            0x00 -> "screen off"
+            0x01 -> "ready"
+            0x02 -> "playback"
+            0x03 -> "recording"
             0x05 -> "pre-recording"
             else -> "0x%02X".format(cameraStatus)
         }
@@ -254,7 +254,7 @@ data class CameraStatus(
 
         fun eisName(v: Int?): String? = when (v) {
             null -> null
-            0 -> "Wył."
+            0 -> "Off"
             1 -> "RockSteady"
             2 -> "HorizonSteady"
             3 -> "RockSteady+"

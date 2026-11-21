@@ -44,7 +44,7 @@ class Alerts(private val context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Alerty kamery", NotificationManager.IMPORTANCE_HIGH).apply {
+                NotificationChannel(CHANNEL_ID, "Camera alerts", NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Bateria, miejsce na karcie, temperatura, zatrzymane nagrywanie"
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 300, 150, 300, 150, 300)
@@ -53,8 +53,8 @@ class Alerts(private val context: Context) {
         }
         if (nm.getNotificationChannel(QUIET_CHANNEL_ID) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(QUIET_CHANNEL_ID, "Zaplanowane nagrywanie", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Potwierdzenia zaplanowanego startu i stopu"
+                NotificationChannel(QUIET_CHANNEL_ID, "Scheduled recording", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Confirmations of the scheduled start and stop"
                 }
             )
         }
@@ -70,8 +70,8 @@ class Alerts(private val context: Context) {
         s.batteryPercent?.let { bat ->
             BATTERY_LEVELS.forEach { level ->
                 if (bat <= level && firedBattery.add(level)) {
-                    banner = "Bateria kamery: $bat%"
-                    post(ID_BATTERY, "Słaba bateria kamery", "Zostało $bat%.")
+                    banner = "Camera battery: $bat%"
+                    post(ID_BATTERY, "Camera battery low", "$bat% left.")
                 }
                 if (bat > level + 5) firedBattery.remove(level)
             }
@@ -81,8 +81,8 @@ class Alerts(private val context: Context) {
         if (remain != null && remain > 0 && s.cameraMode != PHOTO_MODE) {
             REMAIN_LEVELS_SEC.forEach { level ->
                 if (remain <= level && firedRemain.add(level)) {
-                    banner = "Na karcie zostało ${formatDuration(remain)} nagrania"
-                    post(ID_STORAGE, "Kończy się miejsce na karcie", "Zostało ${formatDuration(remain)} nagrania.")
+                    banner = "${formatDuration(remain)} of recording left on the card"
+                    post(ID_STORAGE, "Card almost full", "${formatDuration(remain)} of recording left.")
                 }
                 if (remain > level + 120) firedRemain.remove(level)
             }
@@ -91,48 +91,48 @@ class Alerts(private val context: Context) {
         val temp = s.tempOver ?: 0
         if (temp > lastTemp) {
             val text = when (temp) {
-                1 -> "Kamera jest gorąca, nagrywa dalej."
-                2 -> "Kamera przegrzana — nie może nagrywać."
-                else -> "Kamera przegrzana — wyłącza się."
+                1 -> "Camera is hot, still recording."
+                2 -> "Camera overheated — cannot record."
+                else -> "Camera overheated — shutting down."
             }
             banner = text
-            post(ID_TEMP, "Temperatura kamery", text)
+            post(ID_TEMP, "Camera temperature", text)
         }
         lastTemp = temp
 
         if (prev != null && prev.isRecording && !s.isRecording && !stoppedByApp) {
             val reason = when {
-                temp >= 2 -> " (przegrzanie)"
-                remain != null && remain in 1..30 -> " (pełna karta)"
-                (s.batteryPercent ?: 100) <= 3 -> " (bateria)"
+                temp >= 2 -> " (overheating)"
+                remain != null && remain in 1..30 -> " (card full)"
+                (s.batteryPercent ?: 100) <= 3 -> " (battery)"
                 else -> ""
             }
-            val text = "Nagrywanie zatrzymane nie z aplikacji$reason. Czas klipu: ${formatDuration(prev.recordTimeSec?.toLong())}."
+            val text = "Recording stopped outside the app$reason. Clip length: ${formatDuration(prev.recordTimeSec?.toLong())}."
             banner = text
-            post(ID_STOPPED, "Nagrywanie zatrzymane", text)
+            post(ID_STOPPED, "Recording stopped", text)
         }
         return banner
     }
 
     fun scheduleAtRisk(at: String) {
         post(
-            ID_SCHEDULE, "Kamera zasnęła",
-            "Zaplanowane nagrywanie ($at) się nie uda, dopóki jej nie włączysz. " +
-                "Z telefonu nie da się jej wybudzić — wyłącz w kamerze automatyczne wyłączanie.",
+            ID_SCHEDULE, "Camera fell asleep",
+            "The scheduled recording ($at) will fail unless you turn it on. " +
+                "A phone cannot wake it — disable auto power-off on the camera.",
             channel = QUIET_CHANNEL_ID,
         )
     }
 
     /** Success goes to a quiet channel (it may fire at dawn); failure is a loud alert. */
     fun scheduleResult(ok: Boolean, text: String) {
-        if (ok) post(ID_SCHEDULE, "Zaplanowane nagrywanie", text, channel = QUIET_CHANNEL_ID)
-        else post(ID_SCHEDULE, "Zaplanowane nagrywanie nie powiodło się", text)
+        if (ok) post(ID_SCHEDULE, "Scheduled recording", text, channel = QUIET_CHANNEL_ID)
+        else post(ID_SCHEDULE, "Scheduled recording failed", text)
     }
 
     fun onLinkLostWhileRecording() {
         post(
-            ID_LINK, "Utracono połączenie z kamerą",
-            "Kamera prawdopodobnie nagrywa dalej. Aplikacja próbuje połączyć się ponownie.",
+            ID_LINK, "Lost connection to the camera",
+            "The camera is probably still recording. The app is reconnecting.",
         )
     }
 

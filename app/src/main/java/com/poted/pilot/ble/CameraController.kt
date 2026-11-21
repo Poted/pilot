@@ -33,13 +33,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
 enum class Phase(val label: String) {
-    IDLE("Rozłączono"),
-    CONNECTING("Łączenie…"),
-    HANDSHAKE("Uzgadnianie protokołu…"),
-    WAITING_APPROVAL("Potwierdź na kamerze"),
-    CONNECTED("Połączono"),
-    RECONNECTING("Ponowne łączenie…"),
-    FAILED("Błąd"),
+    IDLE("Disconnected"),
+    CONNECTING("Connecting…"),
+    HANDSHAKE("Handshake…"),
+    WAITING_APPROVAL("Confirm on the camera"),
+    CONNECTED("Connected"),
+    RECONNECTING("Reconnecting…"),
+    FAILED("Failed"),
 }
 
 data class Connection(
@@ -174,12 +174,12 @@ class CameraController private constructor(private val context: Context) {
     fun toggleRecord() {
         if (_busy.value) return
         if (!isConnected) {
-            notice("Brak połączenia z kamerą", error = true)
+            notice("Not connected to the camera", error = true)
             return
         }
         if (_asleep.value) {
             // The DJI FAQ: nothing may be sent to a sleeping camera (it would run it after waking).
-            notice("Kamera uśpiona — włącz ją przyciskiem na kamerze", error = true)
+            notice("Camera is asleep — turn it on with its button", error = true)
             return
         }
         sendRecord(start = _status.value?.isRecording != true)
@@ -194,13 +194,13 @@ class CameraController private constructor(private val context: Context) {
                 val (set, id) = Commands.RECORD
                 val r = sendCommand(set, id, CmdType.CMD_RESPONSE_OR_NOT, Commands.recordControl(start), timeoutMs = 3000)
                 if (r == null) {
-                    notice("Kamera nie odpowiedziała na ${if (start) "START" else "STOP"}", error = true)
+                    notice("Camera did not answer ${if (start) "START" else "STOP"}", error = true)
                     return@launch
                 }
                 val ret = Commands.retCode(r.payload)
                 AppLog.i(TAG, "record ${if (start) "start" else "stop"} ret_code=$ret")
                 if (ret != 0) {
-                    notice("Kamera odrzuciła ${if (start) "START" else "STOP"} (kod $ret)", error = true)
+                    notice("Camera rejected ${if (start) "START" else "STOP"} (code $ret)", error = true)
                     return@launch
                 }
                 _notice.value = null
@@ -210,7 +210,7 @@ class CameraController private constructor(private val context: Context) {
                 }
             } catch (e: Exception) {
                 AppLog.e(TAG, "record failed", e)
-                notice("Błąd wysyłania: ${e.message}", error = true)
+                notice("Send failed: ${e.message}", error = true)
             } finally {
                 lastRecordCommandAt = System.currentTimeMillis()
                 _busy.value = false
@@ -234,7 +234,7 @@ class CameraController private constructor(private val context: Context) {
             _notice.value = null
         } else {
             notice(
-                if (r == null) "Kamera nie odpowiedziała na zmianę trybu" else "Kamera odrzuciła zmianę trybu (kod $ret)",
+                if (r == null) "Camera did not answer the mode switch" else "Camera rejected the mode switch (code $ret)",
                 error = true,
             )
         }
@@ -285,11 +285,11 @@ class CameraController private constructor(private val context: Context) {
 
     private fun fire(what: String, block: suspend () -> Unit) {
         if (!isConnected) {
-            notice("Brak połączenia z kamerą", error = true)
+            notice("Not connected to the camera", error = true)
             return
         }
         if (_asleep.value) {
-            notice("Kamera uśpiona — włącz ją przyciskiem na kamerze", error = true)
+            notice("Camera is asleep — turn it on with its button", error = true)
             return
         }
         AppLog.i(TAG, what)
@@ -340,7 +340,7 @@ class CameraController private constructor(private val context: Context) {
             if (phase == Phase.IDLE || phase == Phase.FAILED) {
                 val addr = prefs.lastAddress
                 if (addr == null) {
-                    done(false, "Brak zapamiętanej kamery")
+                    done(false, "No saved camera")
                     return@launch
                 }
                 connect(addr, prefs.lastName)
@@ -350,13 +350,13 @@ class CameraController private constructor(private val context: Context) {
                 true
             } ?: false
             if (!ready) {
-                done(false, "Nie udało się połączyć z kamerą (wyłączona albo poza zasięgiem)")
+                done(false, "Could not connect to the camera (off or out of range)")
                 return@launch
             }
             if (_asleep.value || _status.value?.powerMode == 3) {
                 // Android cannot send the wake-up advertisement the camera accepts (it wants a
                 // public BLE address, see dji-sdk/Osmo-GPS-Controller-Demo#24).
-                done(false, "Kamera była uśpiona — z telefonu nie da się jej wybudzić. Zostaw ją w standby (bez auto-wyłączania).")
+                done(false, "The camera was asleep and a phone cannot wake it. Leave it in standby (auto power-off disabled).")
                 return@launch
             }
             var warning = ""
@@ -367,27 +367,27 @@ class CameraController private constructor(private val context: Context) {
                     while (_status.value?.cameraMode != mode) delay(200)
                     true
                 } ?: false
-                if (!switched) warning = " (nie udało się przełączyć na ${Commands.modeName(mode)})"
+                if (!switched) warning = " (could not switch to ${Commands.modeName(mode)})"
                 delay(1500) // let the camera settle in the new mode
             }
             if (_status.value?.isRecording == true) {
-                done(true, "Kamera już nagrywała$warning")
+                done(true, "Camera was already recording$warning")
                 return@launch
             }
             val ok = recordAndConfirm(start = true)
             val name = _modeName.value?.name?.takeIf { it.isNotBlank() } ?: Commands.modeName(_status.value?.cameraMode ?: -1)
-            done(ok, if (ok) "Nagrywanie wystartowało ($name)$warning" else "Kamera nie zaczęła nagrywać$warning")
+            done(ok, if (ok) "Recording started ($name)$warning" else "Camera did not start recording$warning")
         }
     }
 
     fun runScheduledStop(done: (ok: Boolean, text: String) -> Unit) {
         scope.launch {
             if (!isConnected || _status.value?.isRecording != true) {
-                done(true, "Nagrywanie nie trwało")
+                done(true, "Was not recording")
                 return@launch
             }
             val ok = recordAndConfirm(start = false)
-            done(ok, if (ok) "Nagrywanie zatrzymane zgodnie z planem" else "Nie udało się zatrzymać nagrywania")
+            done(ok, if (ok) "Recording stopped as planned" else "Could not stop the recording")
         }
     }
 
@@ -427,7 +427,7 @@ class CameraController private constructor(private val context: Context) {
                 prefs.setPaired(address, false)
                 closeClient()
                 resetSessionState()
-                update { it.copy(phase = Phase.FAILED, message = "Kamera odrzuciła połączenie", verifyCode = null) }
+                update { it.copy(phase = Phase.FAILED, message = "Camera rejected the connection", verifyCode = null) }
                 return
             } catch (e: Exception) {
                 AppLog.w(TAG, "session ended: ${e.javaClass.simpleName}: ${e.message}")
@@ -441,7 +441,7 @@ class CameraController private constructor(private val context: Context) {
                 attempt <= 6 -> 10_000L
                 else -> 30_000L
             }
-            update { it.copy(phase = Phase.RECONNECTING, message = "Próba $attempt za ${backoff / 1000}s", verifyCode = null) }
+            update { it.copy(phase = Phase.RECONNECTING, message = "Attempt $attempt in ${backoff / 1000}s", verifyCode = null) }
             delay(backoff)
         }
     }
@@ -458,11 +458,11 @@ class CameraController private constructor(private val context: Context) {
         update {
             it.copy(
                 phase = if (autoConnect) Phase.RECONNECTING else Phase.CONNECTING,
-                message = if (autoConnect) "Czekam na kamerę w zasięgu" else null,
+                message = if (autoConnect) "Waiting for the camera to be in range" else null,
             )
         }
         if (autoConnect) c.connect(true) else withTimeout(25_000) { c.connect(false) }
-        update { it.copy(phase = Phase.CONNECTING, message = "Link BLE nawiązany") }
+        update { it.copy(phase = Phase.CONNECTING, message = "BLE link up") }
         delay(400)
         try {
             c.requestMtu(512)
@@ -496,7 +496,7 @@ class CameraController private constructor(private val context: Context) {
             it.copy(
                 phase = if (paired) Phase.HANDSHAKE else Phase.WAITING_APPROVAL,
                 verifyCode = code,
-                message = if (paired) null else "Zaakceptuj połączenie na ekranie kamery",
+                message = if (paired) null else "Accept the connection on the camera screen",
             )
         }
         AppLog.i(TAG, "handshake: device_id=0x%08X mac=%s verify_mode=%d verify_data=%d".format(
@@ -668,10 +668,10 @@ class CameraController private constructor(private val context: Context) {
             update {
                 it.copy(
                     phase = Phase.FAILED, verifyCode = null,
-                    message = "Kamera zerwała połączenie — połącz ponownie i zaakceptuj na kamerze",
+                    message = "Camera dropped the connection — connect again and accept on the camera",
                 )
             }
-            notice("Kamera odrzuciła połączenie. Połącz ponownie i potwierdź na ekranie kamery.", error = true)
+            notice("Camera rejected the connection. Connect again and confirm on the camera screen.", error = true)
         }
     }
 

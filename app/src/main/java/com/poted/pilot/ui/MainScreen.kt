@@ -104,7 +104,7 @@ fun MainScreen(onShowLog: () -> Unit) {
                     Spacer(Modifier.height(12.dp))
                     ModeSelector(st, asleep, controller)
                 } ?: Text(
-                    "Czekam na status kamery…",
+                    "Waiting for camera status…",
                     color = Palette.Label, modifier = Modifier.padding(vertical = 24.dp),
                 )
             } else {
@@ -117,15 +117,15 @@ fun MainScreen(onShowLog: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Footer(conn, controller)
         }
-        RecordBar(connected, status, asleep, busy) { controller.toggleRecord() }
+        RecordBar(connected, status, asleep, busy, controller)
     }
 }
 
 @Composable
 private fun Header(conn: Connection, asleep: Boolean, onShowLog: () -> Unit) {
     val (dot, label) = when {
-        conn.phase == Phase.CONNECTED && asleep -> Palette.Sleep to "Uśpiona"
-        conn.phase == Phase.CONNECTED -> Palette.Ready to "Połączono"
+        conn.phase == Phase.CONNECTED && asleep -> Palette.Sleep to "Asleep"
+        conn.phase == Phase.CONNECTED -> Palette.Ready to "Connected"
         conn.phase == Phase.FAILED -> Palette.Rec to conn.phase.label
         conn.phase == Phase.IDLE -> Palette.Label to conn.phase.label
         else -> Palette.Warn to conn.phase.label
@@ -149,6 +149,9 @@ private fun Header(conn: Connection, asleep: Boolean, onShowLog: () -> Unit) {
                 }
             }
         }
+        val ctx = LocalContext.current
+        val theme by ThemeSetting.mode.collectAsState()
+        TextButton(onClick = { ThemeSetting.cycle(ctx) }) { Text(theme.label, color = Palette.Label) }
         TextButton(onClick = onShowLog) { Text("Log") }
     }
 }
@@ -176,47 +179,47 @@ private fun ParameterTiles(st: CameraStatus, modeName: Commands.ModeName?, aslee
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Tile("Tryb", mode.uppercase(), Modifier.weight(1.2f), big = true)
-            Tile("Ustawienia", params ?: "—", Modifier.weight(1f), big = true)
+            Tile("Mode", mode.uppercase(), Modifier.weight(1.2f), big = true)
+            Tile("Settings", params ?: "—", Modifier.weight(1f), big = true)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Tile(if (photoMode) "Rozmiar" else "Rozdzielczość", resolutionLabel(st, params), Modifier.weight(1f))
+            Tile(if (photoMode) "Size" else "Resolution", resolutionLabel(st, params), Modifier.weight(1f))
             if (photoMode) {
-                Tile("Seria", st.fpsIdx?.let { if (it > 1) "$it zdjęć" else "pojedyncze" } ?: "—", Modifier.weight(1f))
+                Tile("Burst", st.fpsIdx?.let { if (it > 1) "$it shots" else "single" } ?: "—", Modifier.weight(1f))
             } else {
-                Tile("Klatki", CameraStatus.fpsName(st.fpsIdx)?.let { "$it fps" } ?: "—", Modifier.weight(1f))
+                Tile("Frame rate", CameraStatus.fpsName(st.fpsIdx)?.let { "$it fps" } ?: "—", Modifier.weight(1f))
             }
-            Tile("Stabilizacja", CameraStatus.eisName(st.eisMode) ?: "—", Modifier.weight(1f))
+            Tile("Stabilization", CameraStatus.eisName(st.eisMode) ?: "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val bat = st.batteryPercent
             Tile(
-                "Bateria kamery", bat?.let { "$it%" } ?: "—", Modifier.weight(1f),
+                "Camera battery", bat?.let { "$it%" } ?: "—", Modifier.weight(1f),
                 valueColor = if (bat != null && bat <= 15) Palette.Rec else Palette.Text,
             )
-            Tile("Proporcje", CameraStatus.ratioName(st.photoRatio) ?: "—", Modifier.weight(1f))
+            Tile("Aspect ratio", CameraStatus.ratioName(st.photoRatio) ?: "—", Modifier.weight(1f))
+            Tile("Photos left", st.remainPhotoNum?.toString() ?: "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Tile("Wolne na karcie", formatSize(st.remainCapacityMb), Modifier.weight(1f))
-            Tile("Zostało nagrania", formatDuration(st.remainTimeSec), Modifier.weight(1f))
-            Tile("Zostało zdjęć", st.remainPhotoNum?.toString() ?: "—", Modifier.weight(1f))
+            Tile("Free on card", formatSize(st.remainCapacityMb), Modifier.weight(1f))
+            Tile("Video left", formatDuration(st.remainTimeSec), Modifier.weight(1f))
         }
         val extra = buildList {
             when (st.tempOver) {
-                1 -> add(Triple("Temperatura", "wysoka", Palette.Warn))
-                2 -> add(Triple("Temperatura", "za wysoka — nie nagra", Palette.Rec))
-                3 -> add(Triple("Temperatura", "przegrzanie", Palette.Rec))
+                1 -> add(Triple("Temperature", "high", Palette.Warn))
+                2 -> add(Triple("Temperature", "too hot to record", Palette.Rec))
+                3 -> add(Triple("Temperature", "overheating", Palette.Rec))
             }
             if (st.cameraMode == 0x02 && (st.timelapseInterval ?: 0) > 0) {
-                add(Triple("Interwał", String.format(java.util.Locale.US, "%.1f s", st.timelapseInterval!! / 10.0), Palette.Text))
+                add(Triple("Interval", String.format(java.util.Locale.US, "%.1f s", st.timelapseInterval!! / 10.0), Palette.Text))
             }
-            if ((st.timelapseDurationSec ?: 0) > 0) add(Triple("Czas timelapse", formatDuration(st.timelapseDurationSec!!.toLong()), Palette.Text))
-            if ((st.countdownSec ?: 0) > 0) add(Triple("Odliczanie", "${st.countdownSec} s", Palette.Warn))
+            if ((st.timelapseDurationSec ?: 0) > 0) add(Triple("Timelapse length", formatDuration(st.timelapseDurationSec!!.toLong()), Palette.Text))
+            if ((st.countdownSec ?: 0) > 0) add(Triple("Countdown", "${st.countdownSec} s", Palette.Warn))
             st.loopRecordSec?.takeIf { it != 0 }?.let {
-                add(Triple("Pętla", if (it == 65535) "max" else formatDuration(it.toLong()), Palette.Text))
+                add(Triple("Loop", if (it == 65535) "max" else formatDuration(it.toLong()), Palette.Text))
             }
-            if ((st.userMode ?: 0) in 1..5) add(Triple("Profil", "Custom ${st.userMode}", Palette.Text))
-            if (asleep) add(Triple("Zasilanie", "uśpiona", Palette.Sleep))
+            if ((st.userMode ?: 0) in 1..5) add(Triple("Custom mode", "C${st.userMode}", Palette.Text))
+            if (asleep) add(Triple("Power", "asleep", Palette.Sleep))
         }
         extra.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -271,7 +274,7 @@ private fun resolutionLabel(st: CameraStatus, params: String?): String {
 
 @Composable
 private fun ModeSelector(st: CameraStatus, asleep: Boolean, controller: CameraController) {
-    Text("Tryb", fontSize = 12.sp, color = Palette.Label, modifier = Modifier.padding(bottom = 6.dp))
+    Text("Switch mode", fontSize = 12.sp, color = Palette.Label, modifier = Modifier.padding(bottom = 6.dp))
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -291,8 +294,9 @@ private fun ModeSelector(st: CameraStatus, asleep: Boolean, controller: CameraCo
     }
     Spacer(Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SecondaryButton("QS", Modifier.weight(1f), enabled = !asleep && !st.isRecording) { controller.quickSwitch() }
-        SecondaryButton("Uśpij", Modifier.weight(1f), enabled = !asleep && !st.isRecording) { controller.sleep() }
+        val ctx = LocalContext.current
+        SecondaryButton("Sleep", Modifier.weight(1f), enabled = !asleep && !st.isRecording) { controller.sleep() }
+        SecondaryButton("Disconnect", Modifier.weight(1f)) { CameraService.disconnect(ctx) }
     }
 }
 
@@ -319,9 +323,9 @@ private fun GpsPanel(controller: CameraController) {
     Column(Modifier.fillMaxWidth().clip(Card).background(Palette.Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("GPS z telefonu", color = Palette.Text, fontWeight = FontWeight.SemiBold)
+                Text("Phone GPS", color = Palette.Text, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Lokalizacja i prędkość zapisywane przez kamerę w nagraniu",
+                    "Location and speed sent to the camera for its recordings",
                     fontSize = 12.sp, color = Palette.Label,
                 )
             }
@@ -340,11 +344,11 @@ private fun GpsPanel(controller: CameraController) {
         if (enabled) {
             val loc = gps.location
             val line = when {
-                !gps.running -> "Włączy się po połączeniu z kamerą"
-                loc == null -> "Szukam satelitów… (widoczne: ${gps.satellitesVisible})"
-                else -> "±${loc.accuracy.toInt()} m · satelity ${gps.satellitesUsed}/${gps.satellitesVisible}" +
+                !gps.running -> "Starts once the camera is connected"
+                loc == null -> "Searching for satellites… (${gps.satellitesVisible} visible)"
+                else -> "±${loc.accuracy.toInt()} m · satellites ${gps.satellitesUsed}/${gps.satellitesVisible}" +
                     (if (loc.hasSpeed()) " · ${(loc.speed * 3.6).toInt()} km/h" else "") +
-                    " · wysłano ${gps.sentCount}"
+                    " · sent ${gps.sentCount}"
             }
             Text(line, fontSize = 12.sp, color = if (loc != null) Palette.Ready else Palette.Warn,
                 modifier = Modifier.padding(top = 4.dp))
@@ -357,7 +361,7 @@ private fun GpsPanel(controller: CameraController) {
 private val DURATIONS = listOf(0, 15, 30, 60, 120, 180, 300)
 
 private fun durationLabel(min: Int) = when {
-    min == 0 -> "bez limitu"
+    min == 0 -> "no limit"
     min < 60 -> "$min min"
     else -> "${min / 60} h"
 }
@@ -381,8 +385,8 @@ private fun SchedulePanel() {
     Column(Modifier.fillMaxWidth().clip(Card).background(Palette.Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Zaplanowane nagrywanie", color = Palette.Text, fontWeight = FontWeight.SemiBold)
-                Text("Jednorazowo, np. timelapse przed wschodem", fontSize = 12.sp, color = Palette.Label)
+                Text("Scheduled recording", color = Palette.Text, fontWeight = FontWeight.SemiBold)
+                Text("One-off, e.g. a timelapse before sunrise", fontSize = 12.sp, color = Palette.Label)
             }
             Switch(checked = sch.enabled, onCheckedChange = { update(sch.copy(enabled = it)) })
         }
@@ -394,12 +398,12 @@ private fun SchedulePanel() {
                 }, sch.hour, sch.minute, true).show()
             }
             Box(Modifier.weight(1.4f)) {
-                SecondaryButton(sch.mode?.let { Commands.modeName(it) } ?: "Tryb z kamery", Modifier.fillMaxWidth()) {
+                SecondaryButton(sch.mode?.let { Commands.modeName(it) } ?: "Camera mode", Modifier.fillMaxWidth()) {
                     modeMenu = true
                 }
                 DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Tryb ustawiony na kamerze (też własny)") },
+                        text = { Text("Mode set on the camera (incl. custom)") },
                         onClick = { modeMenu = false; update(sch.copy(mode = null)) },
                     )
                     Commands.switchableModes.forEach { m ->
@@ -415,7 +419,7 @@ private fun SchedulePanel() {
                 DropdownMenu(expanded = durationMenu, onDismissRequest = { durationMenu = false }) {
                     DURATIONS.forEach { d ->
                         DropdownMenuItem(
-                            text = { Text(if (d == 0) "Bez limitu (zatrzymasz sam)" else "Zatrzymaj po ${durationLabel(d)}") },
+                            text = { Text(if (d == 0) "No limit (stop it yourself)" else "Stop after ${durationLabel(d)}") },
                             onClick = { durationMenu = false; update(sch.copy(durationMin = d)) },
                         )
                     }
@@ -424,16 +428,16 @@ private fun SchedulePanel() {
         }
         val line = if (sch.enabled && sch.startAt > 0) {
             val left = ((sch.startAt - now) / 60_000).coerceAtLeast(0)
-            "Start: ${Scheduler.format(sch.startAt)} (za ${left / 60} h ${left % 60} min)"
+            "Starts ${Scheduler.format(sch.startAt)} (in ${left / 60} h ${left % 60} min)"
         } else {
-            "Wyłączone"
+            "Off"
         }
         Text(line, fontSize = 12.sp, color = if (sch.enabled) Palette.Ready else Palette.Label,
             modifier = Modifier.padding(top = 6.dp))
         if (sch.enabled) {
             Text(
-                "Kamera musi zostać włączona (standby): wyłącz w niej automatyczne wyłączanie, najlepiej " +
-                    "podłącz zasilanie. Uśpionej kamery telefon nie obudzi. 5 min przed startem aplikacja sama się połączy.",
+                "Leave the camera on (standby): turn off its auto power-off and ideally plug it in. " +
+                    "The phone cannot wake a sleeping camera. The app connects by itself 5 min before the start.",
                 fontSize = 12.sp, color = Palette.Label, modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -456,7 +460,7 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
             Modifier.fillMaxWidth().clip(Card).background(Palette.Surface).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Zaakceptuj połączenie na ekranie kamery", color = Palette.Text, textAlign = TextAlign.Center)
+            Text("Accept the connection on the camera screen", color = Palette.Text, textAlign = TextAlign.Center)
             Spacer(Modifier.height(8.dp))
             Text("${conn.verifyCode}", fontSize = 36.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         }
@@ -464,7 +468,7 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
     }
 
     if (!idle) {
-        SecondaryButton("Anuluj", Modifier.fillMaxWidth()) { CameraService.disconnect(ctx) }
+        SecondaryButton("Cancel", Modifier.fillMaxWidth()) { CameraService.disconnect(ctx) }
         return
     }
 
@@ -477,11 +481,11 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
             },
             modifier = Modifier.fillMaxWidth().height(52.dp),
             shape = RoundedCornerShape(12.dp),
-        ) { Text("Połącz z ${controller.prefs.lastName ?: last}") }
+        ) { Text("Connect to ${controller.prefs.lastName ?: last}") }
         Spacer(Modifier.height(8.dp))
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SecondaryButton(if (scanning) "Zatrzymaj skan" else "Szukaj kamer", Modifier.weight(1f)) {
+        SecondaryButton(if (scanning) "Stop scan" else "Find cameras", Modifier.weight(1f)) {
             if (activity.hasBtPermissions()) {
                 if (scanning) controller.scanner.stop() else controller.scanner.start()
             } else activity.requestPermissions()
@@ -491,15 +495,15 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
     if (scanning || devices.isNotEmpty()) {
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("Znalezione urządzenia", color = Palette.Label, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text("Devices found", color = Palette.Label, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Checkbox(checked = showAll, onCheckedChange = { showAll = it })
-            Text("wszystkie", fontSize = 13.sp, color = Palette.Label)
+            Text("show all", fontSize = 13.sp, color = Palette.Label)
         }
         val shown = if (showAll) devices else devices.filter { it.isDjiCamera }
         Column(Modifier.fillMaxWidth().clip(Card).background(Palette.Surface)) {
             if (shown.isEmpty()) {
                 Text(
-                    if (scanning) "Szukam… upewnij się, że kamera jest włączona." else "Brak kamer DJI w zasięgu.",
+                    if (scanning) "Searching… make sure the camera is on." else "No DJI cameras in range.",
                     color = Palette.Label, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
                 )
             }
@@ -512,7 +516,7 @@ private fun ConnectPanel(conn: Connection, controller: CameraController) {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            d.name ?: "(bez nazwy)", color = Palette.Text,
+                            d.name ?: "(no name)", color = Palette.Text,
                             fontWeight = if (d.isDjiCamera) FontWeight.SemiBold else FontWeight.Normal,
                         )
                         Text(
@@ -533,28 +537,18 @@ private fun Footer(conn: Connection, controller: CameraController) {
     val ctx = LocalContext.current
     val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val idle = conn.phase == Phase.IDLE || conn.phase == Phase.FAILED
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // The camera accepts one controller at a time: hand it over to Mimo in one tap.
-            SecondaryButton(if (idle) "Otwórz Mimo" else "Przekaż do Mimo", Modifier.weight(1f)) { Mimo.handOff(ctx) }
-            if (conn.phase == Phase.CONNECTED) {
-                SecondaryButton("Rozłącz", Modifier.weight(1f)) { CameraService.disconnect(ctx) }
-            }
-        }
-        Spacer(Modifier.height(8.dp))
         if (!pm.isIgnoringBatteryOptimizations(ctx.packageName)) {
             TextButton(onClick = {
                 ctx.startActivity(
                     Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
                 )
-            }) { Text("Wyłącz optymalizację baterii (zalecane)", fontSize = 13.sp) }
+            }) { Text("Disable battery optimization (recommended)", fontSize = 13.sp) }
         }
         if ((conn.phase == Phase.IDLE || conn.phase == Phase.FAILED) && controller.prefs.lastAddress != null) {
             TextButton(onClick = { controller.forgetPairing() }) {
-                Text("Zapomnij parowanie", fontSize = 12.sp, color = Palette.Label)
+                Text("Forget pairing", fontSize = 12.sp, color = Palette.Label)
             }
         }
-        conn.version?.let { Text(it, fontSize = 11.sp, color = Palette.Label, textAlign = TextAlign.Center) }
         Spacer(Modifier.height(8.dp))
     }
 }
@@ -562,7 +556,14 @@ private fun Footer(conn: Connection, controller: CameraController) {
 // ------------------------------------------------------------------ record
 
 @Composable
-private fun RecordBar(connected: Boolean, st: CameraStatus?, asleep: Boolean, busy: Boolean, onClick: () -> Unit) {
+private fun RecordBar(
+    connected: Boolean,
+    st: CameraStatus?,
+    asleep: Boolean,
+    busy: Boolean,
+    controller: CameraController,
+) {
+    val ctx = LocalContext.current
     val recording = st?.isRecording == true
     val enabled = connected && !busy && !asleep
     val ring = when {
@@ -572,12 +573,12 @@ private fun RecordBar(connected: Boolean, st: CameraStatus?, asleep: Boolean, bu
         else -> Palette.Text
     }
     val caption = when {
-        busy -> "Czekam na kamerę…"
-        !connected -> "Brak połączenia"
-        asleep -> "Uśpiona — włącz kamerę jej przyciskiem"
-        recording -> "Nagrywanie"
-        st?.cameraMode == 0x05 -> "Zrób zdjęcie"
-        else -> "Gotowa"
+        busy -> "Waiting for the camera…"
+        !connected -> "Not connected"
+        asleep -> "Asleep — turn it on with its button"
+        recording -> "Recording"
+        st?.cameraMode == 0x05 -> "Take photo"
+        else -> "Ready"
     }
     Column(
         Modifier.fillMaxWidth().background(Palette.Surface).padding(top = 12.dp, bottom = 16.dp),
@@ -591,23 +592,47 @@ private fun RecordBar(connected: Boolean, st: CameraStatus?, asleep: Boolean, bu
             color = if (recording) Palette.Rec else Palette.Label,
         )
         Spacer(Modifier.height(10.dp))
-        Box(
-            Modifier.size(104.dp).clip(CircleShape).border(5.dp, ring, CircleShape)
-                .clickable(enabled = enabled, onClick = onClick),
-            contentAlignment = Alignment.Center,
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            val inner = when {
-                !connected -> Palette.Outline
-                busy -> Palette.Rec.copy(alpha = 0.4f)
-                asleep -> Palette.Sleep
-                else -> Palette.Rec
+            RoundButton("QS", enabled = connected && !asleep && !recording && !busy) { controller.quickSwitch() }
+            Box(
+                Modifier.size(104.dp).clip(CircleShape).border(5.dp, ring, CircleShape)
+                    .clickable(enabled = enabled) { controller.toggleRecord() },
+                contentAlignment = Alignment.Center,
+            ) {
+                val inner = when {
+                    !connected -> Palette.Outline
+                    busy -> Palette.Rec.copy(alpha = 0.4f)
+                    asleep -> Palette.Sleep
+                    else -> Palette.Rec
+                }
+                if (recording && !busy) {
+                    Box(Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)).background(inner))
+                } else {
+                    Box(Modifier.size(78.dp).clip(CircleShape).background(inner))
+                }
             }
-            if (recording && !busy) {
-                Box(Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)).background(inner))
-            } else {
-                Box(Modifier.size(78.dp).clip(CircleShape).background(inner))
-            }
+            // The camera accepts one controller at a time: this disconnects and opens DJI Mimo.
+            RoundButton("Mimo") { Mimo.handOff(ctx) }
         }
+    }
+}
+
+@Composable
+private fun RoundButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
+        Modifier.size(64.dp).clip(CircleShape).background(Palette.SurfaceHigh)
+            .border(1.dp, Palette.Outline, CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+            color = if (enabled) Palette.Text else Palette.Label.copy(alpha = 0.5f),
+        )
     }
 }
 

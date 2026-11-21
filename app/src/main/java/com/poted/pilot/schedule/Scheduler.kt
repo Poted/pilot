@@ -153,7 +153,7 @@ object Scheduler {
         }
     }
 
-    fun format(at: Long): String = SimpleDateFormat("EEE HH:mm", Locale("pl")).format(Date(at))
+    fun format(at: Long): String = SimpleDateFormat("EEE HH:mm", Locale.US).format(Date(at))
 
     private fun load(context: Context): Schedule {
         val sp = context.getSharedPreferences("schedule", Context.MODE_PRIVATE)

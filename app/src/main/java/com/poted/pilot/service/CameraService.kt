@@ -240,10 +240,10 @@ class CameraService : Service() {
         val name = c.name ?: "Osmo"
 
         val title = when {
-            c.phase == Phase.CONNECTED && asleep -> "$name — uśpiona (włącz przyciskiem)"
+            c.phase == Phase.CONNECTED && asleep -> "$name — asleep (turn it on with its button)"
             c.phase == Phase.CONNECTED && recording -> "● REC ${formatDuration(st?.recordTimeSec?.toLong())} — $name"
-            c.phase == Phase.CONNECTED -> "$name — gotowa"
-            c.phase == Phase.WAITING_APPROVAL -> "$name — potwierdź na kamerze (kod ${c.verifyCode})"
+            c.phase == Phase.CONNECTED -> "$name — ready"
+            c.phase == Phase.WAITING_APPROVAL -> "$name — confirm on the camera (code ${c.verifyCode})"
             else -> "$name — ${c.phase.label}"
         }
         val notice = controller.notice.value?.takeIf { System.currentTimeMillis() - it.at < 10_000 }
@@ -251,8 +251,8 @@ class CameraService : Service() {
             notice.text
         } else if (st != null) {
             val parts = mutableListOf<String>()
-            st.batteryPercent?.let { parts += "Bateria $it%" }
-            st.remainTimeSec?.let { parts += "zostało ${formatDuration(it)}" }
+            st.batteryPercent?.let { parts += "Battery $it%" }
+            st.remainTimeSec?.let { parts += "${formatDuration(it)} left" }
             st.remainCapacityMb?.let { parts += formatFree(it) }
             Scheduler.schedule.value.takeIf { it.enabled }?.let { parts += "start ${Scheduler.format(it.startAt)}" }
             parts.joinToString(" · ")
@@ -301,15 +301,15 @@ class CameraService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         b.addAction(0, "Mimo", mimo)
-        b.addAction(0, "Rozłącz", disconnect)
+        b.addAction(0, "Disconnect", disconnect)
         return b.build()
     }
 
     private fun createChannel() {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val ch = NotificationChannel(CHANNEL_ID, "Połączenie z kamerą", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Stałe powiadomienie z przyciskiem nagrywania"
+            val ch = NotificationChannel(CHANNEL_ID, "Camera connection", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Ongoing notification with the record button"
                 setShowBadge(false)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }

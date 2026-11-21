@@ -12,5 +12,5 @@ fun formatDuration(sec: Long?): String {
 
 fun formatFree(mb: Long?): String {
     if (mb == null) return "—"
-    return if (mb >= 1024) String.format(Locale.US, "%.1f GB wolne", mb / 1024.0) else "$mb MB wolne"
+    return if (mb >= 1024) String.format(Locale.US, "%.1f GB free", mb / 1024.0) else "$mb MB free"
 }

@@ -52,26 +52,26 @@ fun LogScreen(onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("← Wróć") }
+            TextButton(onClick = onBack) { Text("← Back") }
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
                 val cm = ctx.getSystemService(ClipboardManager::class.java)
                 cm.setPrimaryClip(ClipData.newPlainText("Osmo Pilot log", AppLog.text()))
-                Toast.makeText(ctx, "Skopiowano ${lines.size} linii", Toast.LENGTH_SHORT).show()
-            }) { Text("Kopiuj") }
+                Toast.makeText(ctx, "Copied ${lines.size} lines", Toast.LENGTH_SHORT).show()
+            }) { Text("Copy") }
             TextButton(onClick = {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain")
                     .putExtra(Intent.EXTRA_SUBJECT, "Osmo Pilot log")
                     .putExtra(Intent.EXTRA_TEXT, AppLog.text())
-                ctx.startActivity(Intent.createChooser(send, "Udostępnij log"))
-            }) { Text("Udostępnij") }
-            TextButton(onClick = { AppLog.clear() }) { Text("Wyczyść") }
+                ctx.startActivity(Intent.createChooser(send, "Share log"))
+            }) { Text("Share") }
+            TextButton(onClick = { AppLog.clear() }) { Text("Clear") }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Pełny log RX", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            Text("Full RX log", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
             Switch(checked = verbose, onCheckedChange = { verbose = it; AppLog.verbose = it })
             Spacer(Modifier.width(16.dp))
-            Text("Przewijaj", style = MaterialTheme.typography.bodySmall)
+            Text("Follow", style = MaterialTheme.typography.bodySmall)
             Checkbox(checked = follow, onCheckedChange = { follow = it })
         }
         HorizontalDivider()
